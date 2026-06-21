@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 # ----------------------------------
 
 st.set_page_config(
-    page_title="BTC Copilot",
+    page_title="BTC Copilot by JONFLOW-MDQ",
     page_icon="📈",
     layout="wide"
 )
@@ -97,7 +97,7 @@ if es_admin:
             "persistente a largo plazo, sirve como referencia para este testing."
         )
 
-st.title("📈 BTC Copilot")
+st.title("📈 BTC Copilot by JonFlow-MDQ")
 
 # ----------------------------------
 # MODO OPERATIVO
