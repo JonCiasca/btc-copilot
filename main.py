@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 # ----------------------------------
 
 st.set_page_config(
-    page_title="BTC Copilot by JONFLOW_MDQ",
+    page_title="BTC Copilot",
     page_icon="📈",
     layout="wide"
 )
@@ -89,7 +89,7 @@ if es_admin:
             "persistente a largo plazo, sirve como referencia para este testing."
         )
 
-st.title("📈 BTC Copilot by JONFLOW_MDQ")
+st.title("📈 BTC Copilot")
 
 # ----------------------------------
 # MODO OPERATIVO
@@ -172,38 +172,112 @@ st.info(
 # ----------------------------------
 
 def obtener_ticker():
-    url = "https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT"
-    return requests.get(url).json()
+    """
+    Mismo criterio de fallback que obtener_velas: prueba varios
+    dominios de Binance por si el principal está bloqueado para esta
+    infraestructura. Devuelve el dict de Binance, o un dict con
+    'error' si todos los dominios fallan (en vez de lanzar excepción).
+    """
+
+    dominios = [
+        "https://api.binance.com",
+        "https://data-api.binance.com",
+        "https://api1.binance.com",
+        "https://api2.binance.com",
+        "https://api3.binance.com",
+    ]
+
+    ultimo_error = None
+
+    for dominio in dominios:
+        url = f"{dominio}/api/v3/ticker/24hr?symbol=BTCUSDT"
+        try:
+            respuesta = requests.get(url, timeout=8)
+            cuerpo = respuesta.json()
+            if isinstance(cuerpo, dict) and "lastPrice" in cuerpo:
+                return cuerpo
+            ultimo_error = cuerpo.get("msg", str(cuerpo)) if isinstance(cuerpo, dict) else "Respuesta inesperada"
+        except Exception as e:
+            ultimo_error = str(e)
+            continue
+
+    return {"error": ultimo_error}
 
 
 def obtener_velas(intervalo, limite=100):
+    """
+    Descarga velas de Binance. Devuelve un DataFrame con la estructura
+    esperada, o un DataFrame VACÍO (mismas columnas, 0 filas) si todos
+    los intentos fallan — nunca lanza una excepción hacia afuera, para
+    que el resto del dashboard pueda mostrar un aviso claro en vez de
+    un traceback ilegible.
 
-    url = (
-        f"https://api.binance.com/api/v3/klines"
-        f"?symbol=BTCUSDT"
-        f"&interval={intervalo}"
-        f"&limit={limite}"
-    )
+    Por qué hay varios dominios: Binance bloquea o restringe el acceso
+    a api.binance.com desde algunas regiones/infraestructuras cloud
+    (es una política conocida, afecta sobre todo a IPs de EE.UU. y
+    varios proveedores cloud — Streamlit Community Cloud puede caer
+    en esa categoría según la región del servidor). data-api.binance.com
+    y api1/api2/api3.binance.com son espejos que a veces sí responden
+    cuando el dominio principal está bloqueado.
+    """
 
-    datos = requests.get(url).json()
+    columnas = [
+        "open_time", "open", "high", "low", "close", "volume",
+        "close_time", "quote_asset_volume", "number_of_trades",
+        "taker_buy_base", "taker_buy_quote", "ignore"
+    ]
 
-    df = pd.DataFrame(
-        datos,
-        columns=[
-            "open_time",
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
-            "close_time",
-            "quote_asset_volume",
-            "number_of_trades",
-            "taker_buy_base",
-            "taker_buy_quote",
-            "ignore"
-        ]
-    )
+    dominios = [
+        "https://api.binance.com",
+        "https://data-api.binance.com",
+        "https://api1.binance.com",
+        "https://api2.binance.com",
+        "https://api3.binance.com",
+    ]
+
+    datos = None
+    ultimo_error = None
+
+    for dominio in dominios:
+        url = (
+            f"{dominio}/api/v3/klines"
+            f"?symbol=BTCUSDT"
+            f"&interval={intervalo}"
+            f"&limit={limite}"
+        )
+        try:
+            respuesta = requests.get(url, timeout=8)
+            cuerpo = respuesta.json()
+
+            # Binance devuelve un dict con "code"/"msg" cuando hay un
+            # error (ej. IP bloqueada, símbolo inválido, rate limit),
+            # en vez de la lista de velas esperada.
+            if isinstance(cuerpo, dict):
+                ultimo_error = cuerpo.get("msg", str(cuerpo))
+                continue
+
+            if not cuerpo:  # lista vacía
+                ultimo_error = "Respuesta vacía del servidor"
+                continue
+
+            datos = cuerpo
+            break  # éxito, no probamos más dominios
+
+        except Exception as e:
+            ultimo_error = str(e)
+            continue
+
+    if datos is None:
+        # Todos los dominios fallaron: devolvemos DataFrame vacío con
+        # la estructura correcta, y guardamos el error en session_state
+        # para que el dashboard pueda avisar sin romper la ejecución.
+        st.session_state["error_binance_velas"] = (
+            f"No se pudo obtener velas de Binance ({intervalo}) tras probar "
+            f"{len(dominios)} endpoints. Último error: {ultimo_error}"
+        )
+        return pd.DataFrame(columns=columnas)
+
+    df = pd.DataFrame(datos, columns=columnas)
 
     df["open_time"] = pd.to_datetime(
         df["open_time"],
@@ -225,6 +299,9 @@ def obtener_velas(intervalo, limite=100):
 
 def obtener_tendencia_desde_df(df):
     """Calcula tendencia a partir de un df de velas ya obtenido (evita refetch)."""
+
+    if df is None or df.empty:
+        return "⚪ Sin datos"
 
     sma20 = df["close"].tail(20).mean()
     ultimo = df["close"].iloc[-1]
@@ -992,6 +1069,9 @@ def detectar_absorcion(df, lookback=20, umbral_volumen=1.3, umbral_rango=0.75):
 try:
     ticker = obtener_ticker()
 
+    if "error" in ticker:
+        raise ConnectionError(ticker["error"])
+
     precio = float(ticker["lastPrice"])
     cambio = float(ticker["priceChangePercent"])
     volumen = float(ticker["volume"])
@@ -1006,7 +1086,11 @@ try:
         st.metric("Volumen BTC", f"{volumen:,.0f}")
 
 except Exception as e:
-    st.error(f"Error obteniendo BTC: {e}")
+    st.error(
+        f"⚠️ No se pudo obtener el precio de BTC desde Binance: {e}\n\n"
+        f"Puede ser un bloqueo temporal de la API para esta infraestructura. "
+        f"Se reintenta automáticamente en 15 segundos."
+    )
 
 # ----------------------------------
 # FETCH ÚNICO DE VELAS POR TIMEFRAME
@@ -1018,6 +1102,23 @@ except Exception as e:
 df_5m = obtener_velas("5m", 50)
 df_15m = obtener_velas("15m", 50)
 df_1h = obtener_velas("1h", 50)
+
+# Punto de control: si alguno de los 3 vino vacío (Binance no
+# respondió), detenemos acá. Más abajo el Dealer Score usa
+# df_1h["close"].iloc[-1] directamente, que explotaría igual que el
+# error original si dejáramos pasar un df vacío sin chequear.
+if df_5m.empty or df_15m.empty or df_1h.empty:
+    error_detalle = st.session_state.get(
+        "error_binance_velas", "Sin detalle del error disponible."
+    )
+    st.error(
+        f"⚠️ No se pudo obtener datos de velas de Binance (timeframes 5m/15m/1h). "
+        f"El dashboard no puede continuar este refresh.\n\n"
+        f"Detalle: {error_detalle}\n\n"
+        f"Esto puede pasar si Binance bloquea temporalmente la IP del servidor "
+        f"donde corre la app. Se va a reintentar automáticamente en 15 segundos."
+    )
+    st.stop()
 
 tendencia_5m = obtener_tendencia_desde_df(df_5m)
 tendencia_15m = obtener_tendencia_desde_df(df_15m)
@@ -1031,6 +1132,26 @@ tendencia_1h = obtener_tendencia_desde_df(df_1h)
 # velas/rango que en los otros sub-modos de Scalp (1m, 3m), que sí
 # pedían 100 velas frescas. Ahora todos los sub-modos son consistentes.
 df = obtener_velas(data_timeframe, 100)
+
+# Punto de control central: si Binance no respondió (todos los
+# dominios fallaron), df viene vacío. En vez de dejar que explote en
+# cualquier otro .iloc[-1] más adelante (con un traceback ilegible),
+# avisamos claro y detenemos la ejecución de esta vuelta del script.
+# st_autorefresh va a reintentar solo en 15s.
+if df.empty:
+    error_detalle = st.session_state.get(
+        "error_binance_velas", "Sin detalle del error disponible."
+    )
+    st.error(
+        f"⚠️ No se pudo obtener datos de velas de Binance para el timeframe "
+        f"{data_timeframe}. El dashboard no puede continuar este refresh.\n\n"
+        f"Detalle: {error_detalle}\n\n"
+        f"Esto puede pasar si Binance bloquea temporalmente la IP del servidor "
+        f"donde corre la app (es una restricción conocida de Binance para "
+        f"algunas infraestructuras cloud). Se va a reintentar automáticamente "
+        f"en 15 segundos."
+    )
+    st.stop()
 
 # ----------------------------------
 # ANÁLISIS SCALP: liquidez, velocidad, absorción
