@@ -22,6 +22,14 @@ st.set_page_config(
 st_autorefresh(interval=15000, key="btc_refresh")
 
 # ----------------------------------
+# PROXY (Render) — Binance bloquea la IP de Streamlit Cloud, así que
+# todas las consultas a Binance pasan por nuestro proxy propio en
+# Render, que corre en una región no bloqueada.
+# ----------------------------------
+
+PROXY_URL = "https://btccopilot-beta1-0.onrender.com"
+
+# ----------------------------------
 # CONTADOR DE SESIONES (visible solo en panel de admin oculto)
 # ----------------------------------
 #
@@ -171,74 +179,36 @@ st.info(
 # FUNCIONES
 # ----------------------------------
 
-def _get_via_proxy(url_binance, timeout=10):
-    """
-    Hace un GET a una URL de Binance PASANDO POR un proxy CORS gratuito
-    (allorigins.win), en vez de pegarle directo.
-
-    Por qué hace falta esto: Binance bloquea explícitamente el acceso
-    a su API pública desde la infraestructura cloud donde corre
-    Streamlit Community Cloud (ver 'b. Eligibility' en
-    binance.com/en/terms — no es un bloqueo técnico, es una decisión
-    de Binance basada en el origen del pedido). El proxy reenvía el
-    pedido desde SU propia IP, que no está en esa lista de bloqueo, y
-    nos devuelve la respuesta de Binance intacta.
-
-    Riesgo conocido y aceptado: allorigins.win es un servicio gratuito
-    de terceros, no de Binance ni de Anthropic. Puede caerse, cambiar
-    sus límites, o desaparecer sin aviso. Si en el futuro esto empieza
-    a fallar seguido, la alternativa más robusta es armar un proxy
-    propio en un servicio cloud (Render, Railway, Cloudflare Workers).
-
-    Devuelve el JSON ya parseado, o lanza la excepción para que cada
-    función que llama a esto decida cómo manejarla (ya tienen sus
-    propios try/except).
-    """
-
-    # URL-encode de la URL anidada: sin esto, los "&" y "?" de los
-    # parámetros de Binance (ej. "?symbol=BTCUSDT&interval=5m") podrían
-    # interpretarse como parte de los parámetros del PROXY en vez de
-    # como parte de la URL que el proxy tiene que reenviar.
-    url_binance_encoded = requests.utils.quote(url_binance, safe="")
-    url_proxy = f"https://api.allorigins.win/raw?url={url_binance_encoded}"
-    respuesta = requests.get(url_proxy, timeout=timeout)
-    return respuesta.json()
-
-
 def obtener_ticker():
     """
-    Vuelve a Binance (vía proxy CORS, ver _get_via_proxy) en vez de
-    Bybit: Binance daba el desglose real de compra/venta en klines
-    (taker_buy_base), que Bybit no expone — esa pérdida de precisión
-    en el panel de Presión fue el motivo de volver atrás.
+    Pide el ticker 24hs a través de nuestro proxy en Render (en vez de
+    pegarle directo a Binance), porque Binance bloquea la IP de
+    Streamlit Cloud. El proxy corre en una región no bloqueada y
+    reenvía la consulta, probando varios dominios de Binance.
+    Devuelve el dict de Binance, o un dict con 'error' si falla.
     """
 
+    url = f"{PROXY_URL}/ticker24hr?symbol=BTCUSDT"
+
     try:
-        cuerpo = _get_via_proxy(
-            "https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT"
-        )
-
-        if not isinstance(cuerpo, dict) or "lastPrice" not in cuerpo:
-            msg = cuerpo.get("msg", str(cuerpo)) if isinstance(cuerpo, dict) else "Respuesta inesperada del proxy"
-            return {"error": msg}
-
-        return cuerpo
-
+        respuesta = requests.get(url, timeout=10)
+        cuerpo = respuesta.json()
+        if isinstance(cuerpo, dict) and "lastPrice" in cuerpo:
+            return cuerpo
+        msg = cuerpo.get("error", str(cuerpo)) if isinstance(cuerpo, dict) else "Respuesta inesperada del proxy"
+        return {"error": msg}
     except Exception as e:
         return {"error": str(e)}
 
 
-
 def obtener_velas(intervalo, limite=100):
     """
-    Vuelve a Binance (vía proxy CORS, ver _get_via_proxy), que sí da
-    el desglose real de compra/venta dentro de cada vela
-    (taker_buy_base), necesario para el panel de Presión real.
-
-    Devuelve un DataFrame con la estructura esperada, o un DataFrame
-    VACÍO (mismas columnas, 0 filas) si el pedido falla — nunca lanza
-    una excepción hacia afuera, para que el resto del dashboard pueda
-    mostrar un aviso claro en vez de un traceback ilegible.
+    Descarga velas a través de nuestro proxy en Render (ver
+    obtener_ticker). Devuelve un DataFrame con la estructura esperada,
+    o un DataFrame VACÍO (mismas columnas, 0 filas) si el pedido
+    falla — nunca lanza una excepción hacia afuera, para que el resto
+    del dashboard pueda mostrar un aviso claro en vez de un traceback
+    ilegible.
     """
 
     columnas = [
@@ -247,33 +217,46 @@ def obtener_velas(intervalo, limite=100):
         "taker_buy_base", "taker_buy_quote", "ignore"
     ]
 
-    url_binance = (
-        f"https://api.binance.com/api/v3/klines"
+    url = (
+        f"{PROXY_URL}/klines"
         f"?symbol=BTCUSDT&interval={intervalo}&limit={limite}"
     )
 
+    datos = None
+    ultimo_error = None
+
     try:
-        cuerpo = _get_via_proxy(url_binance)
+        respuesta = requests.get(url, timeout=10)
+        cuerpo = respuesta.json()
 
-        # Binance devuelve un dict con "code"/"msg" cuando hay un
-        # error, en vez de la lista de velas esperada.
+        # El proxy/Binance devuelve un dict con "error"/"msg" cuando
+        # hay un problema, en vez de la lista de velas esperada.
         if isinstance(cuerpo, dict):
-            st.session_state["error_binance_velas"] = cuerpo.get("msg", str(cuerpo))
-            return pd.DataFrame(columns=columnas)
-
-        if not cuerpo:  # lista vacía
-            st.session_state["error_binance_velas"] = "Respuesta vacía del proxy/Binance"
-            return pd.DataFrame(columns=columnas)
-
-        datos = cuerpo
+            ultimo_error = cuerpo.get("error", cuerpo.get("msg", str(cuerpo)))
+        elif not cuerpo:  # lista vacía
+            ultimo_error = "Respuesta vacía del servidor"
+        else:
+            datos = cuerpo
 
     except Exception as e:
-        st.session_state["error_binance_velas"] = str(e)
+        ultimo_error = str(e)
+
+    if datos is None:
+        # El pedido falló: devolvemos DataFrame vacío con la
+        # estructura correcta, y guardamos el error en session_state
+        # para que el dashboard pueda avisar sin romper la ejecución.
+        st.session_state["error_binance_velas"] = (
+            f"No se pudo obtener velas vía proxy ({intervalo}). "
+            f"Último error: {ultimo_error}"
+        )
         return pd.DataFrame(columns=columnas)
 
     df = pd.DataFrame(datos, columns=columnas)
 
-    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
+    df["open_time"] = pd.to_datetime(
+        df["open_time"],
+        unit="ms"
+    )
 
     for col in [
         "open",
@@ -313,30 +296,24 @@ def obtener_tendencia(intervalo):
 
 
 def obtener_funding():
-    """
-    Vuelve a Binance Futures (vía proxy CORS, ver _get_via_proxy).
-    """
+    """Pide el funding rate de Binance Futures vía nuestro proxy en Render."""
 
     try:
-        cuerpo = _get_via_proxy(
-            "https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT"
-        )
-        return float(cuerpo["lastFundingRate"]) * 100
+        url = f"{PROXY_URL}/premiumIndex?symbol=BTCUSDT"
+        data = requests.get(url, timeout=10).json()
+        return float(data["lastFundingRate"]) * 100
 
     except Exception:
         return None
 
 
 def obtener_open_interest():
-    """
-    Vuelve a Binance Futures (vía proxy CORS, ver _get_via_proxy).
-    """
+    """Pide el Open Interest de Binance Futures vía nuestro proxy en Render."""
 
     try:
-        cuerpo = _get_via_proxy(
-            "https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT"
-        )
-        return float(cuerpo["openInterest"])
+        url = f"{PROXY_URL}/openInterest?symbol=BTCUSDT"
+        data = requests.get(url, timeout=10).json()
+        return float(data["openInterest"])
 
     except Exception:
         return None
@@ -1086,7 +1063,7 @@ try:
 
 except Exception as e:
     st.error(
-        f"⚠️ No se pudo obtener el precio de BTC desde Binance (vía proxy): {e}\n\n"
+        f"⚠️ No se pudo obtener el precio de BTC (vía proxy): {e}\n\n"
         f"Puede ser un problema temporal de la API. "
         f"Se reintenta automáticamente en 15 segundos."
     )
@@ -1102,7 +1079,7 @@ df_5m = obtener_velas("5m", 50)
 df_15m = obtener_velas("15m", 50)
 df_1h = obtener_velas("1h", 50)
 
-# Punto de control: si alguno de los 3 vino vacío (Binance no
+# Punto de control: si alguno de los 3 vino vacío (el proxy no
 # respondió), detenemos acá. Más abajo el Dealer Score usa
 # df_1h["close"].iloc[-1] directamente, que explotaría igual que el
 # error original si dejáramos pasar un df vacío sin chequear.
@@ -1111,11 +1088,11 @@ if df_5m.empty or df_15m.empty or df_1h.empty:
         "error_binance_velas", "Sin detalle del error disponible."
     )
     st.error(
-        f"⚠️ No se pudo obtener datos de velas de Binance (timeframes 5m/15m/1h). "
+        f"⚠️ No se pudo obtener datos de velas (timeframes 5m/15m/1h). "
         f"El dashboard no puede continuar este refresh.\n\n"
         f"Detalle: {error_detalle}\n\n"
-        f"Puede ser un problema temporal de la API. Se va a reintentar "
-        f"automáticamente en 15 segundos."
+        f"Puede ser un problema temporal de la API o del proxy. "
+        f"Se va a reintentar automáticamente en 15 segundos."
     )
     st.stop()
 
@@ -1132,7 +1109,7 @@ tendencia_1h = obtener_tendencia_desde_df(df_1h)
 # pedían 100 velas frescas. Ahora todos los sub-modos son consistentes.
 df = obtener_velas(data_timeframe, 100)
 
-# Punto de control central: si Binance no respondió (vía proxy), df viene vacío.
+# Punto de control central: si el proxy no respondió, df viene vacío.
 # En vez de dejar que explote en cualquier otro .iloc[-1] más adelante
 # (con un traceback ilegible), avisamos claro y detenemos la ejecución
 # de esta vuelta del script. st_autorefresh va a reintentar solo en 15s.
@@ -1141,10 +1118,10 @@ if df.empty:
         "error_binance_velas", "Sin detalle del error disponible."
     )
     st.error(
-        f"⚠️ No se pudo obtener datos de velas de Binance para el timeframe "
+        f"⚠️ No se pudo obtener datos de velas para el timeframe "
         f"{data_timeframe}. El dashboard no puede continuar este refresh.\n\n"
         f"Detalle: {error_detalle}\n\n"
-        f"Puede ser un problema temporal de la API de Binance o del proxy CORS. "
+        f"Puede ser un problema temporal de la API o del proxy. "
         f"Se va a reintentar automáticamente en 15 segundos."
     )
     st.stop()
@@ -1807,7 +1784,7 @@ with panel1:
 
     aviso_datos = ""
     if not funding_disponible or not oi_disponible:
-        aviso_datos = "\n\n⚠️ Datos de derivados no disponibles en este refresh (Binance Futures)."
+        aviso_datos = "\n\n⚠️ Datos de derivados no disponibles en este refresh."
 
     st.info(
         f"""
