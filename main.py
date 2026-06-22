@@ -2381,16 +2381,32 @@ if "Alcista" in tendencia_1h:
     institucional_score += 30
 elif "Bajista" in tendencia_1h:
     retail_score += 30
-
 # RESULTADOS
+# Normalización: institucional_score y retail_score son dos puntajes
+# acumulativos INDEPENDIENTES (cada uno puede llegar a 100 por su
+# cuenta), por eso antes podían mostrar, ej., 25% y 15% sin que el
+# resto (60%) quedara representado en ningún lado. Para mostrar dos
+# porcentajes que SIEMPRE suman 100%, los normalizamos acá -- pero
+# dejamos institucional_score/retail_score originales intactos para
+# la comparación de "Control actual" más abajo, que sigue usando los
+# valores crudos (no normalizados).
+
+total_score_mi = institucional_score + retail_score
+
+if total_score_mi > 0:
+    institucional_pct = round((institucional_score / total_score_mi) * 100)
+    retail_pct = 100 - institucional_pct
+else:
+    institucional_pct = 50
+    retail_pct = 50
 
 col1, col2 = st.columns(2)
 
 with col1:
-    st.metric("🏦 Institucional", f"{institucional_score}%")
+    st.metric("🏦 Institucional", f"{institucional_pct}%")
 
 with col2:
-    st.metric("👤 Retail", f"{retail_score}%")
+    st.metric("👤 Retail", f"{retail_pct}%")
 
 st.write("")
 
