@@ -2127,23 +2127,28 @@ else:
             ),
         )
 
-        if resultado_flip_local and resultado_flip_local["flip_point"]:
-            fp_local = resultado_flip_local["flip_point"]
-            dist_local = ((fp_local - precio_actual) / precio_actual) * 100
+           if resultado_flip_local:
             gex_spot_local = resultado_flip_local["gex_spot"]
             contexto_local = "🟢 Long Gamma" if gex_spot_local > 0 else "🔴 Short Gamma"
-            lado_local = "🟢 defendido como soporte (comprador)" if fp_local < precio_actual else "🔴 defendido como resistencia (vendedor)"
             venc_txt = vencimiento_local_dt.strftime("%d-%b-%Y") if vencimiento_local_dt else "N/D"
+
+            if resultado_flip_local["flip_point"]:
+                fp_local = resultado_flip_local["flip_point"]
+                dist_local = ((fp_local - precio_actual) / precio_actual) * 100
+                lado_local = "🟢 defendido como soporte (comprador)" if fp_local < precio_actual else "🔴 defendido como resistencia (vendedor)"
+                flip_txt = f"**Flip Point:** ${fp_local:,.0f} ({dist_local:+.2f}% desde el spot)\n**Lado dominante:** {lado_local}"
+            else:
+                flip_txt = "**Flip Point:** sin cruce dentro de ±15% (está fuera del rango explorado)"
+
             st.info(
                 f"""
-**Flip Point:** ${fp_local:,.0f} ({dist_local:+.2f}% desde el spot)
+{flip_txt}
 **Régimen actual:** {contexto_local}
-**Lado dominante:** {lado_local}
-**Vencimiento usado:** {venc_txt}
+**Vencimientos usados:** hasta {venc_txt}
 """
             )
         else:
-            st.caption("No se detectó cruce de signo dentro de ±15% en el vencimiento más próximo.")
+            st.caption("Sin datos suficientes en los vencimientos cercanos para calcular el régimen.") 
 
     st.caption(
         "⚠️ Nota sobre soporte/resistencia: que un nivel actúe como tal no garantiza "
