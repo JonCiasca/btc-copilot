@@ -297,15 +297,18 @@ def obtener_tendencia(intervalo):
 
 def obtener_funding():
     """Pide el funding rate de Binance Futures vía nuestro proxy en Render."""
-
     try:
         url = f"{PROXY_URL}/premiumIndex?symbol=BTCUSDT"
-        data = requests.get(url, timeout=10).json()
+        respuesta = requests.get(url, timeout=10)
+        data = respuesta.json()
+        if "lastFundingRate" not in data:
+            st.session_state["error_funding"] = data.get("error", str(data))
+            return None
         return float(data["lastFundingRate"]) * 100
-
-    except Exception:
+    except Exception as e:
+        st.session_state["error_funding"] = str(e)
         return None
-
+    
 
 def obtener_open_interest():
     """Pide el Open Interest de Binance Futures vía nuestro proxy en Render."""
