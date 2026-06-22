@@ -1638,17 +1638,38 @@ with st.expander("📈 Ver gráfico de tendencia simple (línea)"):
 # VARIABLES GLOBALES
 # ----------------------------------
 
+if "ultimo_funding_valido" not in st.session_state:
+    st.session_state.ultimo_funding_valido = None
+if "ultimo_oi_valido" not in st.session_state:
+    st.session_state.ultimo_oi_valido = None
+
 funding = obtener_funding()
 oi = obtener_open_interest()
 
-# FIX: si Binance Futures falla, no rompemos el dashboard.
-# Usamos 0.0 como neutro y marcamos que el dato no está disponible.
-funding_disponible = funding is not None
-oi_disponible = oi is not None
+# FIX: en vez de mostrar N/D cada vez que un refresh de 15s falla
+# (timeout del proxy, Render dormido, etc.), usamos el último valor
+# bueno conocido y marcamos que es un dato "viejo" sin refrescar.
+# Esto elimina el parpadeo entre dato y N/D en refreshes consecutivos.
 
-funding_valor = funding if funding_disponible else 0.0
-oi_valor = oi if oi_disponible else 0.0
+if funding is not None:
+    st.session_state.ultimo_funding_valido = funding
+    funding_disponible = True
+    funding_valor = funding
+    funding_es_cache = False
+else:
+    funding_disponible = st.session_state.ultimo_funding_valido is not None
+    funding_valor = st.session_state.ultimo_funding_valido if funding_disponible else 0.0
+    funding_es_cache = True
 
+if oi is not None:
+    st.session_state.ultimo_oi_valido = oi
+    oi_disponible = True
+    oi_valor = oi
+    oi_es_cache = False
+else:
+    oi_disponible = st.session_state.ultimo_oi_valido is not None
+    oi_valor = st.session_state.ultimo_oi_valido if oi_disponible else 0.0
+    oi_es_cache = True
 # ----------------------------------
 # PRESION REAL DEL MERCADO
 # ----------------------------------
@@ -1820,15 +1841,20 @@ with panel2:
 
     if funding_disponible:
         estado_funding = "🟢" if funding_valor > 0 else "🔴"
-        st.metric("Funding", f"{funding_valor:.4f}% {estado_funding}")
+        etiqueta_cache_f = " ⏳" if funding_es_cache else ""
+        st.metric("Funding", f"{funding_valor:.4f}% {estado_funding}{etiqueta_cache_f}")
+        if funding_es_cache:
+            st.caption("⏳ Último dato conocido, este refresh no pudo actualizar.")
     else:
         st.metric("Funding", "N/D")
 
     if oi_disponible:
-        st.metric("Open Interest", f"{oi_valor:,.0f}")
+        etiqueta_cache_oi = " ⏳" if oi_es_cache else ""
+        st.metric("Open Interest", f"{oi_valor:,.0f}{etiqueta_cache_oi}")
+        if oi_es_cache:
+            st.caption("⏳ Último dato conocido, este refresh no pudo actualizar.")
     else:
         st.metric("Open Interest", "N/D")
-
     # CAMBIO OPEN INTEREST
     # FIX (calibración): el OI de Binance Futures en BTCUSDT se mueve
     # muy poco en 15s (típicamente 0.01%-0.05%), muy por debajo del
