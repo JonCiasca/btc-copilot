@@ -1219,16 +1219,20 @@ if deribit_disponible:
     vencimientos_global = vencimientos_ordenados[:5] if len(vencimientos_ordenados) >= 3 else vencimientos_ordenados
     vencimiento_global_max = vencimientos_global[-1] if vencimientos_global else None
 
-    # Local: solo el vencimiento más próximo disponible.
-    vencimiento_local_dt = vencimientos_ordenados[0] if vencimientos_ordenados else None
+   # Local: los DOS vencimientos más próximos (típicamente diario + el
+    # siguiente), ponderando por tiempo para que el diario pese más que
+    # el segundo. Antes era solo el vencimiento[0], que a veces era
+    # semanal y dejaba "Local" sin nada realmente cercano al spot.
+    vencimientos_local = vencimientos_ordenados[:2] if len(vencimientos_ordenados) >= 2 else vencimientos_ordenados
+    vencimiento_local_dt = vencimientos_local[-1] if vencimientos_local else None
 
     resultado_flip_global = calcular_flip(
         instrumentos_deribit, precio_actual, vencimiento_max=vencimiento_global_max,
         ponderar_por_tiempo=True,  # evita que el OI de vencimientos lejanos distorsione el flip
     )
     resultado_flip_local = calcular_flip(
-        instrumentos_deribit, precio_actual, vencimiento_max=vencimiento_local_dt
-        # sin ponderar: un solo vencimiento, todos los contratos comparten el mismo t
+        instrumentos_deribit, precio_actual, vencimiento_max=vencimiento_local_dt,
+        ponderar_por_tiempo=True,  # dos vencimientos mezclados: pesar el diario sobre el siguiente
     )
 
     call_wall = encontrar_wall(instrumentos_deribit, "call", precio_actual, ahora)
