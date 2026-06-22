@@ -107,7 +107,7 @@ if "modo" not in st.session_state:
     st.session_state.modo = "Normal"
 
 if "timeframe" not in st.session_state:
-    st.session_state.timeframe = "5m"
+    st.session_state.timeframe = "15m"
 
 if "oi_historial" not in st.session_state:
     st.session_state.oi_historial = []
