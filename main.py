@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 # ----------------------------------
 
 st.set_page_config(
-    page_title="BTC Copilot",
+    page_title="BTC Copilot.",
     page_icon="📈",
     layout="wide"
 )
