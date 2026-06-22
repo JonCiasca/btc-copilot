@@ -2108,7 +2108,7 @@ else:
     with col_f1:
 
         st.subheader(
-            "🔁 Flip Semanal (Largo Plazo)",
+            "🔁 Flip Semanal (Global — Medio y Largo Plazo)",
             help=(
                 "El precio donde, sumando varios vencimientos de opciones, el "
                 "mercado pasa de 'Short Gamma' a 'Long Gamma' (o viceversa). En "
@@ -2137,7 +2137,7 @@ else:
     with col_f2:
 
         st.subheader(
-            "🔁 Flip Cercano (Corto Plazo)",
+            "🔁 Flip Cercano (Local — Corto Plazo)",
             help=(
                 "Lo mismo que el Flip Semanal, pero calculado solo con el "
                 "vencimiento de opciones más próximo en el calendario. Reacciona "
