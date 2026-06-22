@@ -2127,7 +2127,7 @@ else:
             ),
         )
 
-           if resultado_flip_local:
+        if resultado_flip_local:
             gex_spot_local = resultado_flip_local["gex_spot"]
             contexto_local = "🟢 Long Gamma" if gex_spot_local > 0 else "🔴 Short Gamma"
             venc_txt = vencimiento_local_dt.strftime("%d-%b-%Y") if vencimiento_local_dt else "N/D"
