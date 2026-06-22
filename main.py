@@ -1290,7 +1290,7 @@ st.markdown("**🔇 Filtro de ruido de liquidez**")
 
 filtro_liquidez_activo = st.toggle(
     "Ignorar niveles Imán (MAG) muy pegados al precio",
-    value=False,
+    value=True,
     help=(
         "⚠️ Esta variable afecta DOS lugares a la vez: la capa 🧲 IMÁN "
         "dibujada sobre el gráfico principal, Y el resumen de 'Niveles Imán "
@@ -1326,8 +1326,8 @@ if "capas_activas" not in st.session_state:
         "IMAN": True,
         "MINI_FLIP": True,
         "FLIP_FULL": True,
-        "GAMMA_ZONE": True,
-        "WALLS": True,
+        "GAMMA_ZONE": False,
+        "WALLS": False,
         "ABSORB": True,
     }
 # Migración: si quedó guardada una sesión vieja con la clave "FLIP"
@@ -2085,7 +2085,7 @@ else:
     with col_f1:
 
         st.subheader(
-            "🔁 Flip Semanal (Global — 3 a 5 vencimientos)",
+            "🔁 Flip Semanal (Global — Mediano a Largo Plazo)",
             help=(
                 "El precio donde, sumando varios vencimientos de opciones, el "
                 "mercado pasa de 'Short Gamma' a 'Long Gamma' (o viceversa). En "
@@ -2114,7 +2114,7 @@ else:
     with col_f2:
 
         st.subheader(
-            "🔁 Flip Cercano (Local — vencimiento más próximo)",
+            "🔁 Flip Cercano (Local — Corto Plazo)",
             help=(
                 "Lo mismo que el Flip Semanal, pero calculado solo con el "
                 "vencimiento de opciones más próximo en el calendario. Reacciona "
