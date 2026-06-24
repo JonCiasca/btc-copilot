@@ -1616,16 +1616,17 @@ st.caption(
     "(Wall, Flip, Gamma Zone) quedó fuera del recuadro visible."
 )
 
-# Fecha de última actualización del CÓDIGO (no del dato de mercado,
-# que ya se refresca solo cada 15s) + versión del build. Ambos valores
-# son constantes fijas definidas arriba (FECHA_ULTIMA_ACTUALIZACION,
-# VERSION_APP) — actualizalas a mano cuando publiques un cambio nuevo.
-# Tipografía chica y tono apagado para que no compita visualmente con
-# el resto del dashboard.
+# Aviso de refresco automático: info operativa para el usuario (no
+# mantenimiento de código), por eso va pegado al gráfico — ayuda a
+# entender por qué el precio/velas cambian solos cada 15s sin que el
+# usuario haga nada. La fecha de actualización del CÓDIGO (changelog)
+# se movió al pie de página general del dashboard, ver el final del
+# archivo — son dos cosas distintas: una es mantenimiento, esta es
+# comportamiento en vivo de la página.
 st.markdown(
-    f"""
+    """
     <div style="text-align:right; font-size:11px; color:#5c6370; margin-top:-8px;">
-        Última actualización: {FECHA_ULTIMA_ACTUALIZACION} &nbsp;·&nbsp; {VERSION_APP}
+        🔄 Actualización automática cada 15 seg.
     </div>
     """,
     unsafe_allow_html=True,
@@ -2573,4 +2574,25 @@ st.caption(
     "siempre la confirmación real del mercado antes de actuar — los niveles "
     "proyectados (Flip, Walls, Imán, Absorción) son zonas de mayor probabilidad "
     "estadística, no garantías de reacción del precio."
+)
+
+# ----------------------------------
+# FOOTER DE MANTENIMIENTO (changelog manual del CÓDIGO)
+# ----------------------------------
+#
+# Esto NO tiene que ver con el refresco de datos en vivo (eso ya se
+# avisa cerca del gráfico: "Actualización automática cada 15 seg.").
+# Es información de mantenimiento de la propia web: cuándo fue la
+# última vez que el código del dashboard fue editado/publicado, y qué
+# versión de build es. Son constantes fijas (VERSION_APP,
+# FECHA_ULTIMA_ACTUALIZACION) definidas al principio del archivo —
+# actualizalas a mano cada vez que publiques un cambio nuevo.
+
+st.markdown(
+    f"""
+    <div style="text-align:center; font-size:11px; color:#5c6370; margin-top:18px;">
+        Última actualización del sistema: {FECHA_ULTIMA_ACTUALIZACION} &nbsp;·&nbsp; {VERSION_APP}
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
