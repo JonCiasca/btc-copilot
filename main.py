@@ -19,6 +19,16 @@ st.set_page_config(
     layout="wide"
 )
 
+# Versión del build, mostrada en letra chica junto a la fecha de
+# última actualización (ver más abajo, cerca del gráfico principal).
+# IMPORTANTE: estas dos constantes NO se recalculan solas con cada
+# refresh de 15s — son un changelog manual. Subí VERSION_APP y
+# actualizá FECHA_ULTIMA_ACTUALIZACION a mano cada vez que el CÓDIGO
+# cambie (nueva capa, fix, ajuste de UI), no cada vez que llega un
+# dato nuevo de Binance/Deribit.
+VERSION_APP = "v0.0.1"
+FECHA_ULTIMA_ACTUALIZACION = "24/06/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
+
 st_autorefresh(interval=15000, key="btc_refresh")
 
 # ----------------------------------
@@ -1547,10 +1557,18 @@ if capas["ABSORB"]:
             dash="longdash",
         )
 
-fig_overlay.add_hline(
-    y=precio_actual, line_dash="dot", line_color="yellow", line_width=1,
-    annotation_text=f"Precio actual ${precio_actual:,.0f}",
-    annotation_position="right",
+# --- PRECIO ACTUAL: valor completo (sin abreviar) + recuadro naranja ---
+# Pedido del usuario: que el último precio se vea completo (ej. 62,810
+# y no "$63,1" recortado por superponerse con otros indicadores), y
+# que además resalte sobre el resto de las capas con un color propio
+# (naranja) que no se confunda con Imán/Flip/Walls/Absorb. Reusa
+# _etiqueta_overlay para mantener el mismo estilo visual (línea +
+# etiqueta con fondo semi-transparente) que ya tienen los demás niveles.
+_etiqueta_overlay(
+    fig_overlay, precio_actual,
+    f"💲 ${precio_actual:,.0f}",
+    "#ff8c00", "rgba(255,140,0,0.30)",
+    dash="dot",
 )
 
 # Zoom/pan libres en ambos ejes: por defecto el rango inicial es el
@@ -1562,8 +1580,24 @@ fig_overlay.add_hline(
 # El eje de precios pasa a la derecha (barra de valores), con más
 # densidad de marcas (nticks) para que no salte tanto entre niveles.
 # El eje de tiempo (X) queda visible abajo, como en el gráfico original.
-fig_overlay.update_xaxes(fixedrange=False, visible=True, showticklabels=True)
-fig_overlay.update_yaxes(fixedrange=False, side="right", nticks=25, visible=True, showticklabels=True)
+
+# --- CROSSHAIR (cruz que sigue al mouse en todo el gráfico) ---
+# Plotly no tiene un "crosshair" nativo como lightweight-charts, pero
+# "spikelines" cumple la misma función: al pasar el mouse sobre el
+# área de velas, dibuja una línea vertical (hasta el eje de tiempo) y
+# una horizontal (hasta el eje de precio), mostrando los valores en
+# ambos ejes. hovermode="x" asegura que la spike vertical siga al
+# cursor sin necesidad de estar exactamente sobre una vela.
+fig_overlay.update_xaxes(
+    fixedrange=False, visible=True, showticklabels=True,
+    showspikes=True, spikemode="across", spikesnap="cursor",
+    spikecolor="rgba(255,255,255,0.5)", spikethickness=1, spikedash="solid",
+)
+fig_overlay.update_yaxes(
+    fixedrange=False, side="right", nticks=25, visible=True, showticklabels=True,
+    showspikes=True, spikemode="across", spikesnap="cursor",
+    spikecolor="rgba(255,255,255,0.5)", spikethickness=1, spikedash="solid",
+)
 
 fig_overlay.update_layout(
     template="plotly_dark",          # fuerza el tema oscuro explícitamente
@@ -1573,12 +1607,28 @@ fig_overlay.update_layout(
     height=650,
     margin=dict(l=10, r=90, t=10, b=40),  # más margen abajo para que el eje de tiempo no quede cortado
     dragmode="pan",  # arrastrar mueve el gráfico; zoom queda a cargo de la rueda
+    hovermode="x",  # activa el crosshair: spike vertical sigue al cursor en toda la franja de tiempo
 )
 
 st.caption(
     "🖱️ Posicionate sobre el gráfico y usá la rueda del mouse para hacer zoom "
     "(acercar/alejar). Arrastrá con el clic para desplazarte si algún nivel "
     "(Wall, Flip, Gamma Zone) quedó fuera del recuadro visible."
+)
+
+# Fecha de última actualización del CÓDIGO (no del dato de mercado,
+# que ya se refresca solo cada 15s) + versión del build. Ambos valores
+# son constantes fijas definidas arriba (FECHA_ULTIMA_ACTUALIZACION,
+# VERSION_APP) — actualizalas a mano cuando publiques un cambio nuevo.
+# Tipografía chica y tono apagado para que no compita visualmente con
+# el resto del dashboard.
+st.markdown(
+    f"""
+    <div style="text-align:right; font-size:11px; color:#5c6370; margin-top:-8px;">
+        Última actualización: {FECHA_ULTIMA_ACTUALIZACION} &nbsp;·&nbsp; {VERSION_APP}
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
 
 st.plotly_chart(
