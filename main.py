@@ -1397,6 +1397,19 @@ st.divider()
 x_min = df["open_time"].iloc[0]
 x_max = df["open_time"].iloc[-1]
 
+# --- MARGEN VISIBLE A LA DERECHA (espacio de ~3 velas vacías) ---
+# Pedido del usuario: que entre la última vela y los valores del eje
+# de precio (derecha) quede un espacio fijo, tipo 3 velas en blanco,
+# en vez de que la última vela quede pegada al borde del gráfico.
+# Esto es SOLO el rango visible inicial del eje X (x_min/x_max de
+# arriba no se tocan, porque esas siguen marcando el ancho real de
+# las líneas de nivel — Imán, Flip, Walls, etc. — que deben cruzar
+# todo el candlestick, no el margen extra).
+VELAS_DE_MARGEN_DERECHO = 3
+
+duracion_vela = df["open_time"].iloc[-1] - df["open_time"].iloc[-2]
+x_max_visible = x_max + duracion_vela * VELAS_DE_MARGEN_DERECHO
+
 
 def _etiqueta_overlay(fig, y_valor, texto_corto, color_linea, color_fondo_rgba, dash="dot"):
     """
@@ -1590,6 +1603,7 @@ _etiqueta_overlay(
 # cursor sin necesidad de estar exactamente sobre una vela.
 fig_overlay.update_xaxes(
     fixedrange=False, visible=True, showticklabels=True,
+    range=[x_min, x_max_visible],  # rango inicial: deja el margen de 3 velas a la derecha
     showspikes=True, spikemode="across", spikesnap="cursor",
     spikecolor="rgba(255,255,255,0.5)", spikethickness=1, spikedash="solid",
 )
