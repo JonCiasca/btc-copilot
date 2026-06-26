@@ -1058,8 +1058,6 @@ def _calcular_score_strikes(instrumentos, tipo, spot_actual, ahora):
 
         score = oi_total * gamma_strike * peso_tiempo * peso_distancia
 
-        lectura = _lectura_decaimiento(dias_ref, theta_strike, oi_total, gamma_strike)
-
         resultados[strike] = {
             "score": score,
             "oi": oi_total,
@@ -1073,8 +1071,17 @@ def _calcular_score_strikes(instrumentos, tipo, spot_actual, ahora):
             "vega_otro_lado": vega_otro_lado,
             "theta_otro_lado": theta_otro_lado,
             "dias_a_vencimiento": dias_ref,
-            "lectura_decaimiento": lectura,
         }
+
+    # Segundo paso: recién acá conocemos el score máximo del lado
+    # completo, necesario para el magnetismo relativo de la lectura de
+    # decaimiento (ver _lectura_decaimiento).
+    score_max_lado = max((r["score"] for r in resultados.values()), default=0.0) or 1.0
+    for strike, info in resultados.items():
+        magnetismo_relativo = info["score"] / score_max_lado
+        info["lectura_decaimiento"] = _lectura_decaimiento(
+            info["dias_a_vencimiento"], info["oi"], magnetismo_relativo
+        )
 
     return resultados
 
