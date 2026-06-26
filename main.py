@@ -547,38 +547,71 @@ def _theta_black_scholes(spot, strike, vol_anual, dias_a_vencimiento, tipo, tasa
     return theta_anual / 365.0
 
 
-def _lectura_decaimiento(dias_a_vencimiento, theta, oi, gamma):
+def _lectura_decaimiento(dias_a_vencimiento, oi, magnetismo_relativo):
     """
     Clasificación cualitativa de cómo se espera que decaiga la
-    relevancia de un strike hacia su vencimiento, a partir de Theta y
-    días restantes. Esto NO es una predicción de movimiento de precio
-    ni un timing de ruptura — es una descripción de cómo decae el
-    propio contrato de opción con el paso del tiempo, que es un hecho
-    matemático del modelo, no una inferencia sobre el mercado.
+    relevancia de un strike hacia su vencimiento. Esto NO es una
+    predicción de movimiento de precio ni un timing de ruptura — es
+    una descripción de cómo decae el propio contrato de opción con el
+    paso del tiempo (hecho matemático del modelo) combinada con qué
+    tan cargado está ESE strike en relación a los demás del mismo lado
+    (magnetismo relativo) — no una inferencia sobre hacia dónde va a
+    moverse el precio de BTC.
+
+    FIX (detectado por el usuario): la versión anterior solo miraba
+    días a vencimiento; el OI/gamma entraban en la fórmula pero se
+    cancelaban algebraicamente (abs(theta)/oi*oi == abs(theta)), por
+    eso dos strikes con los mismos días daban SIEMPRE la misma lectura
+    sin importar cuánto OI/score tuvieran. Ahora el magnetismo relativo
+    (score del strike / score máximo del lado, 0 a 1) sí cambia el
+    resultado: un strike muy cargado (cerca del máximo de su lado)
+    sostiene su lectura un escalón más "estable" que uno casi vacío con
+    los mismos días restantes, porque hace falta más flujo para mover
+    una posición grande que una chica.
+
+    magnetismo_relativo: score_strike / score_máximo_del_lado (0 a 1).
+    Se calcula afuera (ver _calcular_score_strikes), porque requiere
+    conocer el score de TODOS los strikes del lado, no solo el propio.
 
     Categorías (umbrales orientativos, pensados para opciones de BTC
     con strikes cercanos al dinero en vencimientos semanales/cortos):
-      - "estable": quedan muchos días, el decaimiento diario es chico
-        en relación al valor restante -> la wall debería sostenerse.
-      - "moderado": decaimiento gradual, normal para la ventana de
-        tiempo restante.
-      - "acelerado": pocos días Y theta alto en relación al gamma ->
-        la opción pierde valor rápido, lo cual típicamente reduce el
-        incentivo de los dealers a seguir cubriendo agresivamente ese
-        strike a medida que se acerca el vencimiento.
+      - "estable": muchos días restantes, o pocos días pero con
+        magnetismo alto (posición grande, tarda más en perder peso).
+      - "moderado": ventana de tiempo intermedia con magnetismo medio,
+        o pocos días con magnetismo bajo-medio.
+      - "acelerado": pocos días Y magnetismo bajo -> posición chica
+        cerca de vencer, pierde relevancia rápido y es la primera que
+        los dealers dejan de defender.
     """
 
     if dias_a_vencimiento <= 0 or oi <= 0:
         return "sin datos suficientes"
 
-    theta_relativo = abs(theta) / max(oi, 1.0) * oi  # normalizador trivial, mantiene unidades por contrato
+    # Score combinado: días restantes (normalizado a una ventana de 21
+    # días, el máximo que usa el Flip Global) + magnetismo relativo.
+    # Ambos pesan por igual -> un strike puede compensar pocos días con
+    # mucho magnetismo, o viceversa.
+    factor_tiempo = min(dias_a_vencimiento / 21.0, 1.0)  # 0 (vence ya) a 1 (21+ días)
+    indice_combinado = (factor_tiempo + magnetismo_relativo) / 2.0  # 0 a 1
 
-    if dias_a_vencimiento <= 2 and abs(theta) > 0:
-        return "acelerado: pocos días restantes, decaimiento diario fuerte — la wall puede perder peso rápido si no hay movimiento."
-    elif dias_a_vencimiento <= 7:
-        return "moderado: decaimiento normal para un vencimiento semanal, pierde relevancia de forma gradual."
+    if indice_combinado >= 0.55:
+        return (
+            f"estable: magnetismo relativo {magnetismo_relativo*100:.0f}% del máximo de su lado "
+            f"con {dias_a_vencimiento:.1f} días restantes — posición lo bastante cargada o con "
+            f"tiempo suficiente para sostener su peso."
+        )
+    elif indice_combinado >= 0.25:
+        return (
+            f"moderado: magnetismo relativo {magnetismo_relativo*100:.0f}% del máximo de su lado "
+            f"con {dias_a_vencimiento:.1f} días restantes — decaimiento gradual, ni de los más "
+            f"sostenidos ni de los primeros en perder peso."
+        )
     else:
-        return "estable: quedan varios días, el decaimiento diario es chico en relación al tiempo restante."
+        return (
+            f"acelerado: magnetismo relativo {magnetismo_relativo*100:.0f}% del máximo de su lado "
+            f"con {dias_a_vencimiento:.1f} días restantes — posición chica y/o cerca de vencer, "
+            f"de las primeras que los dealers dejarían de defender."
+        )
 
 
 def obtener_instrumentos_deribit():
@@ -2841,10 +2874,13 @@ with tab_opciones:
                         st.markdown(
                             f"""
                             <div style="display:flex;flex-direction:column;align-items:flex-end;">
-                                <div style="font-size:10px;color:#fca5a5;margin-bottom:2px;">
-                                    Δ {lado_call['delta']:+.2f} · ν {lado_call['vega']:.1f} · θ {lado_call['theta']:.1f} · Γ {lado_call['gamma']:.6f}
+                                <div style="font-size:10px;color:#fca5a5;line-height:1.5;">
+                                    <div>Δ {lado_call['delta']:+.2f}</div>
+                                    <div>ν {lado_call['vega']:.1f}</div>
+                                    <div>θ {lado_call['theta']:.1f}</div>
+                                    <div>Γ {lado_call['gamma']:.6f}</div>
                                 </div>
-                                <div style="background:#1e2128;border-radius:4px;height:14px;width:100%;display:flex;justify-content:flex-end;overflow:hidden;">
+                                <div style="background:#1e2128;border-radius:4px;height:14px;width:100%;display:flex;justify-content:flex-end;overflow:hidden;margin-top:4px;">
                                     <div style="background:#ef4444;height:14px;border-radius:4px;width:{ancho_pct}%;"></div>
                                 </div>
                                 <div style="font-size:9px;color:#9a9a9a;margin-top:2px;text-align:right;">
@@ -2855,7 +2891,7 @@ with tab_opciones:
                             unsafe_allow_html=True,
                         )
                     else:
-                        st.markdown("""<div style="height:48px;"></div>""", unsafe_allow_html=True)
+                        st.markdown("""<div style="height:90px;"></div>""", unsafe_allow_html=True)
 
                 with col_precio:
                     st.markdown(
@@ -2871,10 +2907,13 @@ with tab_opciones:
                         st.markdown(
                             f"""
                             <div style="display:flex;flex-direction:column;align-items:flex-start;">
-                                <div style="font-size:10px;color:#86efac;margin-bottom:2px;">
-                                    Δ {lado_put['delta']:+.2f} · ν {lado_put['vega']:.1f} · θ {lado_put['theta']:.1f} · Γ {lado_put['gamma']:.6f}
+                                <div style="font-size:10px;color:#86efac;line-height:1.5;">
+                                    <div>Δ {lado_put['delta']:+.2f}</div>
+                                    <div>ν {lado_put['vega']:.1f}</div>
+                                    <div>θ {lado_put['theta']:.1f}</div>
+                                    <div>Γ {lado_put['gamma']:.6f}</div>
                                 </div>
-                                <div style="background:#1e2128;border-radius:4px;height:14px;width:100%;overflow:hidden;">
+                                <div style="background:#1e2128;border-radius:4px;height:14px;width:100%;overflow:hidden;margin-top:4px;">
                                     <div style="background:#22c55e;height:14px;border-radius:4px;width:{ancho_pct}%;"></div>
                                 </div>
                                 <div style="font-size:9px;color:#9a9a9a;margin-top:2px;text-align:left;">
@@ -2885,7 +2924,7 @@ with tab_opciones:
                             unsafe_allow_html=True,
                         )
                     else:
-                        st.markdown("""<div style="height:48px;"></div>""", unsafe_allow_html=True)
+                        st.markdown("""<div style="height:90px;"></div>""", unsafe_allow_html=True)
 
             # --- Encabezado ---
             col_hg_call, col_hg_precio, col_hg_put = st.columns([2.6, 1.1, 2.6])
