@@ -449,6 +449,138 @@ def _gamma_black_scholes(spot, strike, vol_anual, dias_a_vencimiento, tasa=0.0):
     return gamma
 
 
+def _d1_d2_black_scholes(spot, strike, vol_anual, dias_a_vencimiento, tasa=0.0):
+    """
+    Calcula d1 y d2 de Black-Scholes una sola vez, para que Delta/Vega/
+    Theta (que todos dependen de d1 y/o d2) no repitan el mismo cálculo
+    de log/sqrt cada uno por separado. Devuelve (None, None) si los
+    parámetros no son válidos (vencido, vol/spot/strike <= 0).
+    """
+
+    if dias_a_vencimiento <= 0 or vol_anual <= 0 or spot <= 0 or strike <= 0:
+        return None, None
+
+    t = dias_a_vencimiento / 365.0
+
+    try:
+        d1 = (
+            math.log(spot / strike) + (tasa + 0.5 * vol_anual ** 2) * t
+        ) / (vol_anual * math.sqrt(t))
+        d2 = d1 - vol_anual * math.sqrt(t)
+    except (ValueError, ZeroDivisionError):
+        return None, None
+
+    return d1, d2
+
+
+def _norm_cdf(x):
+    """Función de distribución acumulada normal estándar, vía erf (sin scipy)."""
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2)))
+
+
+def _delta_black_scholes(spot, strike, vol_anual, dias_a_vencimiento, tipo, tasa=0.0):
+    """
+    Delta de Black-Scholes: sensibilidad del precio de la opción ante
+    un cambio de 1 USD en el spot. Para CALL va de 0 a 1, para PUT de
+    -1 a 0. Lectura de mercado estándar: |delta| se usa como proxy de
+    "probabilidad implícita" de terminar in-the-money al vencimiento
+    (no es una probabilidad real bajo medida física, es la que implica
+    el modelo bajo medida neutral al riesgo — la lectura habitual en
+    mesas de opciones, no una garantía estadística).
+    """
+
+    d1, _ = _d1_d2_black_scholes(spot, strike, vol_anual, dias_a_vencimiento, tasa)
+    if d1 is None:
+        return 0.0
+
+    if tipo == "call":
+        return _norm_cdf(d1)
+    else:
+        return _norm_cdf(d1) - 1.0
+
+
+def _vega_black_scholes(spot, strike, vol_anual, dias_a_vencimiento, tasa=0.0):
+    """
+    Vega de Black-Scholes (igual para call y put al mismo strike):
+    cambio en el precio de la opción por cada 1 punto porcentual
+    (0.01) de cambio en la volatilidad implícita anualizada. Se
+    devuelve ya escalado a "por 1 punto de IV" (estándar de mesas:
+    vega/100), no a "por 100% de IV".
+    """
+
+    d1, _ = _d1_d2_black_scholes(spot, strike, vol_anual, dias_a_vencimiento, tasa)
+    if d1 is None:
+        return 0.0
+
+    t = dias_a_vencimiento / 365.0
+    vega_completo = spot * _norm_pdf(d1) * math.sqrt(t)
+    return vega_completo / 100.0
+
+
+def _theta_black_scholes(spot, strike, vol_anual, dias_a_vencimiento, tipo, tasa=0.0):
+    """
+    Theta de Black-Scholes: cuánto valor pierde la opción por el paso
+    de 1 día calendario, manteniendo todo lo demás constante (spot,
+    IV) — el "alquiler" que paga el comprador de la opción cada día.
+    Se devuelve ya escalado a "por día" (theta_anual / 365), no a
+    "por año", que es como sale crudo de la fórmula clásica.
+
+    Asume tasa libre de riesgo ≈ 0 (mismo criterio que el resto del
+    módulo de GEX), lo cual simplifica el término de costo de
+    financiamiento de la fórmula completa sin alterar la lectura
+    cualitativa del decaimiento.
+    """
+
+    d1, d2 = _d1_d2_black_scholes(spot, strike, vol_anual, dias_a_vencimiento, tasa)
+    if d1 is None:
+        return 0.0
+
+    t = dias_a_vencimiento / 365.0
+
+    termino_comun = -(spot * _norm_pdf(d1) * vol_anual) / (2 * math.sqrt(t))
+
+    if tipo == "call":
+        theta_anual = termino_comun - tasa * strike * _norm_cdf(d2)
+    else:
+        theta_anual = termino_comun + tasa * strike * _norm_cdf(-d2)
+
+    return theta_anual / 365.0
+
+
+def _lectura_decaimiento(dias_a_vencimiento, theta, oi, gamma):
+    """
+    Clasificación cualitativa de cómo se espera que decaiga la
+    relevancia de un strike hacia su vencimiento, a partir de Theta y
+    días restantes. Esto NO es una predicción de movimiento de precio
+    ni un timing de ruptura — es una descripción de cómo decae el
+    propio contrato de opción con el paso del tiempo, que es un hecho
+    matemático del modelo, no una inferencia sobre el mercado.
+
+    Categorías (umbrales orientativos, pensados para opciones de BTC
+    con strikes cercanos al dinero en vencimientos semanales/cortos):
+      - "estable": quedan muchos días, el decaimiento diario es chico
+        en relación al valor restante -> la wall debería sostenerse.
+      - "moderado": decaimiento gradual, normal para la ventana de
+        tiempo restante.
+      - "acelerado": pocos días Y theta alto en relación al gamma ->
+        la opción pierde valor rápido, lo cual típicamente reduce el
+        incentivo de los dealers a seguir cubriendo agresivamente ese
+        strike a medida que se acerca el vencimiento.
+    """
+
+    if dias_a_vencimiento <= 0 or oi <= 0:
+        return "sin datos suficientes"
+
+    theta_relativo = abs(theta) / max(oi, 1.0) * oi  # normalizador trivial, mantiene unidades por contrato
+
+    if dias_a_vencimiento <= 2 and abs(theta) > 0:
+        return "acelerado: pocos días restantes, decaimiento diario fuerte — la wall puede perder peso rápido si no hay movimiento."
+    elif dias_a_vencimiento <= 7:
+        return "moderado: decaimiento normal para un vencimiento semanal, pierde relevancia de forma gradual."
+    else:
+        return "estable: quedan varios días, el decaimiento diario es chico en relación al tiempo restante."
+
+
 def obtener_instrumentos_deribit():
     """
     Descarga la lista de opciones BTC activas en Deribit junto con su
@@ -779,7 +911,21 @@ def _calcular_score_strikes(instrumentos, tipo, spot_actual, ahora):
     que antes: la wall suele estar dominada por el vencimiento más
     cercano/líquido).
 
-    Devuelve dict {strike: {"score":..., "oi":..., "gamma":..., "instrumento_ref":...}}
+    AMPLIACIÓN (Delta/Vega/Theta + lectura de decaimiento): además del
+    score y la gamma del tipo pedido (`tipo`), cada strike devuelve
+    también los Greeks del LADO OPUESTO, calculados sobre el mismo
+    instrumento de referencia (vencimiento más próximo en ese strike,
+    misma IV). Esto es lo que permite que la tabla muestre, para un
+    mismo strike, tanto la lectura call como la lectura put sin tener
+    que recorrer la lista de instrumentos dos veces. El campo
+    "lectura_decaimiento" es texto descriptivo (ver _lectura_decaimiento),
+    no una predicción de movimiento de precio.
+
+    Devuelve dict {strike: {...}} con, por strike:
+      score, oi, gamma, distancia_pct (del tipo pedido),
+      delta, vega, theta (del tipo pedido),
+      delta_otro_lado, vega_otro_lado, theta_otro_lado, gamma_otro_lado,
+      dias_a_vencimiento, lectura_decaimiento
     """
 
     por_strike = {}
@@ -795,6 +941,17 @@ def _calcular_score_strikes(instrumentos, tipo, spot_actual, ahora):
         strike = inst["strike"]
         por_strike.setdefault(strike, []).append(inst)
 
+    # Índice auxiliar del lado opuesto, por (strike, vencimiento), para
+    # poder calcular sus Greeks sobre el MISMO vencimiento de referencia
+    # que el tipo pedido (mismo criterio de "instrumento más próximo").
+    tipo_opuesto = "put" if tipo == "call" else "call"
+    iv_lado_opuesto = {}
+    for inst in instrumentos:
+        if inst["tipo"] != tipo_opuesto:
+            continue
+        clave = (inst["strike"], inst["vencimiento"])
+        iv_lado_opuesto[clave] = inst["iv"]
+
     resultados = {}
 
     for strike, candidatos in por_strike.items():
@@ -807,12 +964,53 @@ def _calcular_score_strikes(instrumentos, tipo, spot_actual, ahora):
         inst_referencia = candidatos[0]
 
         dias_ref = (inst_referencia["vencimiento"] - ahora).total_seconds() / 86400.0
+        dias_ref_seguro = max(dias_ref, 0.01)
+        iv_ref = inst_referencia["iv"]
 
         gamma_strike = _gamma_black_scholes(
             spot=spot_actual,
             strike=strike,
-            vol_anual=inst_referencia["iv"],
-            dias_a_vencimiento=max(dias_ref, 0.01),
+            vol_anual=iv_ref,
+            dias_a_vencimiento=dias_ref_seguro,
+        )
+
+        delta_strike = _delta_black_scholes(
+            spot=spot_actual, strike=strike, vol_anual=iv_ref,
+            dias_a_vencimiento=dias_ref_seguro, tipo=tipo,
+        )
+        vega_strike = _vega_black_scholes(
+            spot=spot_actual, strike=strike, vol_anual=iv_ref,
+            dias_a_vencimiento=dias_ref_seguro,
+        )
+        theta_strike = _theta_black_scholes(
+            spot=spot_actual, strike=strike, vol_anual=iv_ref,
+            dias_a_vencimiento=dias_ref_seguro, tipo=tipo,
+        )
+
+        # Lado opuesto: mismo strike, mismo vencimiento de referencia.
+        # Si no existe ese instrumento en Deribit (puede pasar, no
+        # todos los strikes tienen ambos lados listados), usamos la
+        # misma IV de referencia como aproximación razonable -- el
+        # objetivo es mostrar la lectura comparativa, no un dato exacto
+        # de un contrato que no existe.
+        clave_opuesta = (strike, inst_referencia["vencimiento"])
+        iv_opuesta = iv_lado_opuesto.get(clave_opuesta, iv_ref)
+
+        gamma_otro_lado = _gamma_black_scholes(
+            spot=spot_actual, strike=strike, vol_anual=iv_opuesta,
+            dias_a_vencimiento=dias_ref_seguro,
+        )
+        delta_otro_lado = _delta_black_scholes(
+            spot=spot_actual, strike=strike, vol_anual=iv_opuesta,
+            dias_a_vencimiento=dias_ref_seguro, tipo=tipo_opuesto,
+        )
+        vega_otro_lado = _vega_black_scholes(
+            spot=spot_actual, strike=strike, vol_anual=iv_opuesta,
+            dias_a_vencimiento=dias_ref_seguro,
+        )
+        theta_otro_lado = _theta_black_scholes(
+            spot=spot_actual, strike=strike, vol_anual=iv_opuesta,
+            dias_a_vencimiento=dias_ref_seguro, tipo=tipo_opuesto,
         )
 
         peso_tiempo = 1.0 / math.sqrt(max(dias_ref, 0.5))
@@ -827,11 +1025,22 @@ def _calcular_score_strikes(instrumentos, tipo, spot_actual, ahora):
 
         score = oi_total * gamma_strike * peso_tiempo * peso_distancia
 
+        lectura = _lectura_decaimiento(dias_ref, theta_strike, oi_total, gamma_strike)
+
         resultados[strike] = {
             "score": score,
             "oi": oi_total,
             "gamma": gamma_strike,
             "distancia_pct": (strike - spot_actual) / spot_actual * 100,
+            "delta": delta_strike,
+            "vega": vega_strike,
+            "theta": theta_strike,
+            "gamma_otro_lado": gamma_otro_lado,
+            "delta_otro_lado": delta_otro_lado,
+            "vega_otro_lado": vega_otro_lado,
+            "theta_otro_lado": theta_otro_lado,
+            "dias_a_vencimiento": dias_ref,
+            "lectura_decaimiento": lectura,
         }
 
     return resultados
@@ -906,13 +1115,19 @@ def calcular_tabla_strikes(instrumentos, spot_actual, ahora, vencimientos_permit
     vencimientos permitidos, los datos necesarios para el heatmap +
     tabla de la tab de Opciones/Derivados: OI agregado, gamma, score
     combinado (mismo criterio que encontrar_wall — ver
-    _calcular_score_strikes) y distancia % al precio actual.
+    _calcular_score_strikes), distancia % al precio actual, y los
+    Greeks ampliados (delta, vega, theta, y los mismos del lado
+    opuesto) más la lectura cualitativa de decaimiento.
 
     Pedido del usuario: un indicador tipo Deribit que muestre rápido
     dónde está el OI más cargado (magnetismo) por strike, con su
-    variación. La variación de OI entre refreshes se calcula afuera
-    de esta función (necesita guardarse en session_state, que vive
-    en el script principal, no en esta función pura).
+    variación, y además el detalle de Greeks para poder leer cómo se
+    comporta cada contrato hacia su vencimiento (sin que esto sea una
+    predicción de timing de movimiento de precio — ver docstring de
+    _lectura_decaimiento). La variación de OI entre refreshes se
+    calcula afuera de esta función (necesita guardarse en
+    session_state, que vive en el script principal, no en esta
+    función pura).
 
     Devuelve una lista de dicts ordenada por score descendente,
     limitada a max_strikes (los más relevantes, para no saturar la
@@ -934,6 +1149,15 @@ def calcular_tabla_strikes(instrumentos, spot_actual, ahora, vencimientos_permit
                 "gamma": info["gamma"],
                 "score": info["score"],
                 "distancia_pct": info["distancia_pct"],
+                "delta": info["delta"],
+                "vega": info["vega"],
+                "theta": info["theta"],
+                "gamma_otro_lado": info["gamma_otro_lado"],
+                "delta_otro_lado": info["delta_otro_lado"],
+                "vega_otro_lado": info["vega_otro_lado"],
+                "theta_otro_lado": info["theta_otro_lado"],
+                "dias_a_vencimiento": info["dias_a_vencimiento"],
+                "lectura_decaimiento": info["lectura_decaimiento"],
             })
 
     filas.sort(key=lambda f: f["score"], reverse=True)
@@ -2361,14 +2585,19 @@ with tab_opciones:
     st.divider()
 
     # ----------------------------------
-    # HEATMAP + TABLA DE STRIKES (paleta estilo Deribit)
+    # HEATMAP DE STRIKES — EJE ÚNICO DE PRECIOS
     # ----------------------------------
     #
-    # Pedido del usuario: un indicador rápido (en segundos) de dónde
-    # está el OI más cargado, el magnetismo (score combinado) y la
-    # variación reciente, por strike. Usa la misma lista de
-    # vencimientos del Flip Global (ya filtrada a semanales/corto
-    # plazo, ver vencimientos_semanales_ordenados más arriba).
+    # FIX (pedido del usuario, calibración de lectura): antes call y put
+    # se mostraban en dos bloques separados, cada uno con su propio orden
+    # interno. Ahora es UN solo eje vertical de precios, de mayor a
+    # menor (como mirar un book real): los strikes por ENCIMA del precio
+    # actual arriba, el precio actual cruzando justo en el medio como
+    # separador, y los strikes por DEBAJO abajo. El precio queda a la
+    # izquierda de cada fila (como un ticker de profundidad de mercado),
+    # la barra de magnetismo a la derecha. Mismo criterio de score que
+    # ya usan las Walls (ver _calcular_score_strikes), sin cambios en el
+    # cálculo — esto es solo reordenamiento visual.
     #
     # Historial de OI por strike en sesión (Deribit no da histórico
     # vía API pública), mismo patrón que ya se usa para Call/Put Wall.
@@ -2376,11 +2605,12 @@ with tab_opciones:
     st.subheader(
         "🌡️ Heatmap de strikes (OI · magnetismo · variación)",
         help=(
-            "Muestra los strikes con mayor SCORE combinado (OI x gamma x peso "
-            "tiempo x peso distancia, igual criterio que las Walls) dentro de los "
-            "vencimientos semanales de corto plazo. La barra más larga = mayor "
-            "magnetismo (más probabilidad de influir en el precio). Δ OI compara "
-            "contra el valor de hace ~10 refreshes (~2.5 min)."
+            "Eje único de precios: arriba del precio actual = strikes más altos "
+            "(zona de CALL/resistencias), abajo = strikes más bajos (zona de PUT/"
+            "soportes). El precio actual cruza el medio como referencia. La barra "
+            "más larga = mayor SCORE combinado (OI x gamma x peso tiempo x peso "
+            "distancia, igual criterio que las Walls). Δ OI compara contra el "
+            "valor de hace ~10 refreshes (~2.5 min)."
         ),
     )
 
@@ -2406,30 +2636,54 @@ with tab_opciones:
 
             score_max = max(f["score"] for f in tabla_strikes) or 1.0
 
+            # Actualiza el historial de OI de cada strike ANTES de
+            # ordenar/renderizar, para que el Δ esté disponible en el
+            # mismo ciclo (mismo patrón que ya usaba el bloque anterior).
             for fila in tabla_strikes:
-
                 clave_hist = f"{fila['tipo']}_{fila['strike']:.0f}"
                 historial = st.session_state.strikes_oi_historial.setdefault(clave_hist, [])
+                fila["cambio_oi"] = _actualizar_y_calcular_cambio_oi(historial, fila["oi"])
 
-                cambio_oi_strike = _actualizar_y_calcular_cambio_oi(historial, fila["oi"])
+            # Eje único: TODOS los strikes (call y put mezclados),
+            # ordenados de precio más alto a más bajo, con el precio
+            # actual insertado como separador en su posición real dentro
+            # del ranking de precios — no al final ni al principio.
+            filas_arriba = sorted(
+                [f for f in tabla_strikes if f["strike"] > precio_actual],
+                key=lambda f: f["strike"],
+            )  # ascendente: el más cercano al precio queda pegado al separador
+            filas_abajo = sorted(
+                [f for f in tabla_strikes if f["strike"] <= precio_actual],
+                key=lambda f: f["strike"], reverse=True,
+            )  # descendente: el más cercano al precio queda pegado al separador
 
+            def _render_fila_heatmap(fila):
                 color_barra = "#ef4444" if fila["tipo"] == "call" else "#22c55e"
+                color_texto = "#fca5a5" if fila["tipo"] == "call" else "#86efac"
                 icono_tipo = "🔴 CALL" if fila["tipo"] == "call" else "🟢 PUT"
                 ancho_pct = max(round((fila["score"] / score_max) * 100), 2)
+                cambio_oi_strike = fila["cambio_oi"]
+                cambio_txt = f" Δ{cambio_oi_strike:+.1f}%" if cambio_oi_strike is not None else " Δ s/h"
 
-                cambio_txt = f" · Δ{cambio_oi_strike:+.1f}%" if cambio_oi_strike is not None else " · Δ sin historial"
+                col_precio, col_barra_col, col_info = st.columns([1.1, 2.3, 1.6])
 
-                col_barra, col_info = st.columns([3, 2])
+                with col_precio:
+                    st.markdown(
+                        f"""<div style="font-size:14px;font-weight:600;color:#e5e5e5;padding-top:2px;">
+                        ${fila['strike']:,.0f}
+                        </div>""",
+                        unsafe_allow_html=True,
+                    )
 
-                with col_barra:
+                with col_barra_col:
                     st.markdown(
                         f"""
-                        <div style="margin-bottom:4px;">
-                            <div style="font-size:13px;color:#c9c9c9;">
-                                {icono_tipo} ${fila['strike']:,.0f} ({fila['distancia_pct']:+.1f}%)
+                        <div style="margin-bottom:2px;">
+                            <div style="font-size:11px;color:{color_texto};">
+                                {icono_tipo} ({fila['distancia_pct']:+.1f}%)
                             </div>
-                            <div style="background:#1e2128;border-radius:4px;height:18px;width:100%;">
-                                <div style="background:{color_barra};height:18px;border-radius:4px;width:{ancho_pct}%;"></div>
+                            <div style="background:#1e2128;border-radius:4px;height:16px;width:100%;">
+                                <div style="background:{color_barra};height:16px;border-radius:4px;width:{ancho_pct}%;"></div>
                             </div>
                         </div>
                         """,
@@ -2437,18 +2691,65 @@ with tab_opciones:
                     )
 
                 with col_info:
-                    st.caption(f"OI: {fila['oi']:,.0f}{cambio_txt}")
+                    st.caption(f"OI {fila['oi']:,.0f} ·{cambio_txt}")
+
+            # --- Strikes por arriba del precio (más alto primero, el más cercano al precio queda último = pegado al separador) ---
+            for fila in reversed(filas_arriba):
+                _render_fila_heatmap(fila)
+
+            # --- Separador: PRECIO ACTUAL cruzando el eje en su posición real ---
+            st.markdown(
+                f"""
+                <div style="display:flex;align-items:center;margin:6px 0;padding:6px 10px;
+                background:rgba(255,140,0,0.15);border-top:1px solid #ff8c00;border-bottom:1px solid #ff8c00;">
+                    <span style="font-size:14px;font-weight:700;color:#ff8c00;">💲 ${precio_actual:,.0f}</span>
+                    <span style="font-size:11px;color:#ff8c00;margin-left:10px;">precio actual</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            # --- Strikes por debajo del precio (más cercano al precio primero = pegado al separador, bajando) ---
+            for fila in filas_abajo:
+                _render_fila_heatmap(fila)
 
             st.divider()
+
+            # ----------------------------------
+            # TABLA AMPLIADA: GREEKS POR STRIKE (Delta · Vega · Theta · Gamma)
+            # ----------------------------------
+            #
+            # Pedido del usuario: que la tabla muestre, además de OI/Gamma/
+            # Score, los Greeks completos (Delta, Vega, Theta) y una lectura
+            # de cómo decae cada contrato hacia su vencimiento. IMPORTANTE
+            # (límite honesto, ya conversado): esto describe el COMPORTAMIENTO
+            # del contrato de opción (cuánto pierde valor por día, cuán
+            # sensible es a la IV, qué probabilidad implícita le asigna el
+            # mercado), no predice CUÁNDO se va a mover el precio de BTC.
+            # No hay una "ecuación" válida que combine estos Greeks en un
+            # timing de ruptura — eso sería decoración matemática, no
+            # análisis. Por eso la columna se llama "Lectura de decaimiento"
+            # y no "Próximo movimiento" ni similar.
+            #
+            # Delta/Vega/Theta se calculan dos veces por fila (lado pedido y
+            # lado opuesto, mismo strike y vencimiento de referencia — ver
+            # _calcular_score_strikes), porque cada strike de Deribit tiene
+            # contratos call Y put como instrumentos separados.
 
             tabla_df = pd.DataFrame([
                 {
                     "Tipo": "CALL" if f["tipo"] == "call" else "PUT",
                     "Strike": f"${f['strike']:,.0f}",
                     "OI": f"{f['oi']:,.0f}",
-                    "Gamma": f"{f['gamma']:.8f}",
+                    "Delta": f"{f['delta']:+.2f}",
+                    "Gamma": f"{f['gamma']:.6f}",
+                    "Vega": f"{f['vega']:.2f}",
+                    "Theta/día": f"{f['theta']:.2f}",
+                    "Delta (lado opuesto)": f"{f['delta_otro_lado']:+.2f}",
+                    "Días a venc.": f"{f['dias_a_vencimiento']:.1f}",
                     "Distancia %": f"{f['distancia_pct']:+.2f}%",
                     "Score (magnetismo)": round(f["score"], 6),
+                    "Lectura de decaimiento": f["lectura_decaimiento"],
                 }
                 for f in tabla_strikes
             ])
@@ -2457,12 +2758,17 @@ with tab_opciones:
 
             st.caption(
                 "⚠️ Score = OI x gamma x peso tiempo x peso distancia (mismo cálculo "
-                "que determina las Walls). No es un dato confirmado de posicionamiento "
-                "real, es un proxy de relevancia para el comportamiento de dealers en "
-                "el corto plazo."
+                "que determina las Walls). Delta ≈ probabilidad implícita (bajo el "
+                "modelo, no garantía estadística) de terminar in-the-money. Vega = "
+                "sensibilidad a 1 punto de IV. Theta/día = pérdida de valor diaria del "
+                "contrato, todo lo demás constante. 'Lectura de decaimiento' describe "
+                "el comportamiento del CONTRATO hacia su vencimiento — no predice "
+                "cuándo ni hacia dónde se va a mover el precio de BTC. Ningún campo de "
+                "esta tabla es una señal de entrada o salida."
             )
 
     st.divider()
+
 
     # ----------------------------------
     # RESUMEN TEXTUAL DE NIVELES (detalle técnico + R:R sugerido)
