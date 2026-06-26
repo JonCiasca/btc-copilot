@@ -26,8 +26,8 @@ st.set_page_config(
 # actualizá FECHA_ULTIMA_ACTUALIZACION a mano cada vez que el CÓDIGO
 # cambie (nueva capa, fix, ajuste de UI), no cada vez que llega un
 # dato nuevo de Binance/Deribit.
-VERSION_APP = "v0.0.2"
-FECHA_ULTIMA_ACTUALIZACION = "25/06/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
+VERSION_APP = "V 0.0.3"
+FECHA_ULTIMA_ACTUALIZACION = "26/06/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
 
 # ----------------------------------
 # REFRESH DINÁMICO AL ARRANQUE
@@ -2585,31 +2585,58 @@ with tab_opciones:
     st.divider()
 
     # ----------------------------------
-    # HEATMAP DE STRIKES — EJE ÚNICO DE PRECIOS
+    # HEATMAP DE STRIKES — FORMATO BOOK DE PROFUNDIDAD (DOM)
     # ----------------------------------
     #
-    # FIX (pedido del usuario, calibración de lectura): antes call y put
-    # se mostraban en dos bloques separados, cada uno con su propio orden
-    # interno. Ahora es UN solo eje vertical de precios, de mayor a
-    # menor (como mirar un book real): los strikes por ENCIMA del precio
-    # actual arriba, el precio actual cruzando justo en el medio como
-    # separador, y los strikes por DEBAJO abajo. El precio queda a la
-    # izquierda de cada fila (como un ticker de profundidad de mercado),
-    # la barra de magnetismo a la derecha. Mismo criterio de score que
-    # ya usan las Walls (ver _calcular_score_strikes), sin cambios en el
-    # cálculo — esto es solo reordenamiento visual.
+    # FIX (pedido del usuario, calibración de lectura): antes cada
+    # strike aparecía en DOS filas separadas (una fila call, otra fila
+    # put), cada una con su propia barra horizontal completa. Ahora es
+    # UNA sola fila por STRIKE, con la columna de PRECIO al centro,
+    # la barra de CALL creciendo hacia la IZQUIERDA y la barra de PUT
+    # creciendo hacia la DERECHA — igual que un book de profundidad de
+    # mercado (DOM), tal como lo esquematizó el usuario. Cada lado
+    # escala de forma INDEPENDIENTE contra el máximo de su propio lado
+    # (un call grande no aplasta visualmente a un put chico en la misma
+    # fila, ni viceversa). El precio actual sigue cruzando el eje en su
+    # posición real, como separador entre los strikes de arriba y abajo.
+    #
+    # Agrupamiento por strike: ver _agrupar_filas_strikes_por_precio.
+    # Mismo criterio de score que ya usan las Walls (sin cambios en el
+    # cálculo subyacente — esto es solo reordenamiento/recombinación
+    # visual de filas que ya existían por separado).
     #
     # Historial de OI por strike en sesión (Deribit no da histórico
     # vía API pública), mismo patrón que ya se usa para Call/Put Wall.
 
+    def _agrupar_filas_strikes_por_precio(tabla_strikes):
+        """
+        Reagrupa la lista plana de calcular_tabla_strikes (una fila por
+        cada combinación strike+tipo) en un dict {strike: {"call":fila_o_None, "put":fila_o_None}},
+        para poder dibujar UNA fila por strike con call a la izquierda y
+        put a la derecha. Si un strike solo tiene datos de un lado (no
+        todos los strikes de Deribit tienen call Y put con suficiente
+        OI/IV), el lado faltante queda en None y simplemente no dibuja
+        barra de ese lado.
+        """
+
+        agrupado = {}
+
+        for fila in tabla_strikes:
+            entrada = agrupado.setdefault(fila["strike"], {"call": None, "put": None})
+            entrada[fila["tipo"]] = fila
+
+        return agrupado
+
     st.subheader(
-        "🌡️ Heatmap de strikes (OI · magnetismo · variación)",
+        "🌡️ Heatmap de strikes — book de profundidad (OI · magnetismo · variación)",
         help=(
-            "Eje único de precios: arriba del precio actual = strikes más altos "
-            "(zona de CALL/resistencias), abajo = strikes más bajos (zona de PUT/"
-            "soportes). El precio actual cruza el medio como referencia. La barra "
-            "más larga = mayor SCORE combinado (OI x gamma x peso tiempo x peso "
-            "distancia, igual criterio que las Walls). Δ OI compara contra el "
+            "Una fila por strike, cada $500 (intervalo nativo de Deribit para BTC). "
+            "CALL crece hacia la izquierda, PUT crece hacia la derecha, cada lado "
+            "escalado contra el máximo de SU propio lado (no se comparan entre sí "
+            "en ancho). El precio actual cruza el eje en su posición real, separando "
+            "los strikes de arriba (resistencias) de los de abajo (soportes). La "
+            "barra más larga = mayor SCORE combinado (OI x gamma x peso tiempo x "
+            "peso distancia, igual criterio que las Walls). Δ OI compara contra el "
             "valor de hace ~10 refreshes (~2.5 min)."
         ),
     )
@@ -2627,144 +2654,288 @@ with tab_opciones:
         tabla_strikes = calcular_tabla_strikes(
             instrumentos_deribit, precio_actual, ahora,
             vencimientos_permitidos=vencimientos_global,
-            max_strikes=12,
+            max_strikes=20,  # más alto que antes: ahora cada fila puede llevar call+put juntos, así que se necesitan más filas crudas para llenar una buena cantidad de strikes visibles
         )
 
         if not tabla_strikes:
             st.caption("Sin datos suficientes de strikes en los vencimientos filtrados.")
         else:
 
-            score_max = max(f["score"] for f in tabla_strikes) or 1.0
-
-            # Actualiza el historial de OI de cada strike ANTES de
-            # ordenar/renderizar, para que el Δ esté disponible en el
-            # mismo ciclo (mismo patrón que ya usaba el bloque anterior).
+            # Actualiza el historial de OI de cada fila (call y put por
+            # separado, cada uno tiene su propio Open Interest) ANTES de
+            # agrupar/renderizar, para que el Δ esté disponible ya en
+            # este ciclo (mismo patrón que el bloque anterior).
             for fila in tabla_strikes:
                 clave_hist = f"{fila['tipo']}_{fila['strike']:.0f}"
                 historial = st.session_state.strikes_oi_historial.setdefault(clave_hist, [])
                 fila["cambio_oi"] = _actualizar_y_calcular_cambio_oi(historial, fila["oi"])
 
-            # Eje único: TODOS los strikes (call y put mezclados),
-            # ordenados de precio más alto a más bajo, con el precio
-            # actual insertado como separador en su posición real dentro
-            # del ranking de precios — no al final ni al principio.
-            filas_arriba = sorted(
-                [f for f in tabla_strikes if f["strike"] > precio_actual],
-                key=lambda f: f["strike"],
-            )  # ascendente: el más cercano al precio queda pegado al separador
-            filas_abajo = sorted(
-                [f for f in tabla_strikes if f["strike"] <= precio_actual],
-                key=lambda f: f["strike"], reverse=True,
-            )  # descendente: el más cercano al precio queda pegado al separador
+            score_max_call = max([f["score"] for f in tabla_strikes if f["tipo"] == "call"], default=1.0) or 1.0
+            score_max_put = max([f["score"] for f in tabla_strikes if f["tipo"] == "put"], default=1.0) or 1.0
 
-            def _render_fila_heatmap(fila):
-                color_barra = "#ef4444" if fila["tipo"] == "call" else "#22c55e"
-                color_texto = "#fca5a5" if fila["tipo"] == "call" else "#86efac"
-                icono_tipo = "🔴 CALL" if fila["tipo"] == "call" else "🟢 PUT"
-                ancho_pct = max(round((fila["score"] / score_max) * 100), 2)
-                cambio_oi_strike = fila["cambio_oi"]
-                cambio_txt = f" Δ{cambio_oi_strike:+.1f}%" if cambio_oi_strike is not None else " Δ s/h"
+            agrupado_por_strike = _agrupar_filas_strikes_por_precio(tabla_strikes)
 
-                col_precio, col_barra_col, col_info = st.columns([1.1, 2.3, 1.6])
+            strikes_arriba = sorted([s for s in agrupado_por_strike if s > precio_actual])
+            strikes_abajo = sorted([s for s in agrupado_por_strike if s <= precio_actual], reverse=True)
+
+            def _render_fila_book(strike, lado_call, lado_put):
+                """
+                Una fila del book: barra CALL (izquierda, crece hacia el
+                centro desde afuera) | PRECIO (centro) | barra PUT
+                (derecha, crece hacia afuera desde el centro). Si un lado
+                no tiene datos para este strike, ese lado queda vacío.
+                """
+
+                col_call, col_precio, col_put = st.columns([2.4, 1.1, 2.4])
+
+                with col_call:
+                    if lado_call:
+                        ancho_pct = max(round((lado_call["score"] / score_max_call) * 100), 2)
+                        cambio = lado_call["cambio_oi"]
+                        cambio_txt = f"Δ{cambio:+.1f}%" if cambio is not None else "Δ s/h"
+                        st.markdown(
+                            f"""
+                            <div style="display:flex;flex-direction:column;align-items:flex-end;">
+                                <div style="font-size:10px;color:#fca5a5;margin-bottom:2px;">
+                                    OI {lado_call['oi']:,.0f} · {cambio_txt}
+                                </div>
+                                <div style="background:#1e2128;border-radius:4px;height:16px;width:100%;display:flex;justify-content:flex-end;overflow:hidden;">
+                                    <div style="background:#ef4444;height:16px;border-radius:4px;width:{ancho_pct}%;"></div>
+                                </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.markdown(
+                            """<div style="height:34px;"></div>""",
+                            unsafe_allow_html=True,
+                        )
 
                 with col_precio:
                     st.markdown(
-                        f"""<div style="font-size:14px;font-weight:600;color:#e5e5e5;padding-top:2px;">
-                        ${fila['strike']:,.0f}
+                        f"""<div style="text-align:center;font-size:14px;font-weight:600;color:#e5e5e5;padding-top:6px;">
+                        ${strike:,.0f}
                         </div>""",
                         unsafe_allow_html=True,
                     )
 
-                with col_barra_col:
-                    st.markdown(
-                        f"""
-                        <div style="margin-bottom:2px;">
-                            <div style="font-size:11px;color:{color_texto};">
-                                {icono_tipo} ({fila['distancia_pct']:+.1f}%)
+                with col_put:
+                    if lado_put:
+                        ancho_pct = max(round((lado_put["score"] / score_max_put) * 100), 2)
+                        cambio = lado_put["cambio_oi"]
+                        cambio_txt = f"Δ{cambio:+.1f}%" if cambio is not None else "Δ s/h"
+                        st.markdown(
+                            f"""
+                            <div style="display:flex;flex-direction:column;align-items:flex-start;">
+                                <div style="font-size:10px;color:#86efac;margin-bottom:2px;">
+                                    OI {lado_put['oi']:,.0f} · {cambio_txt}
+                                </div>
+                                <div style="background:#1e2128;border-radius:4px;height:16px;width:100%;overflow:hidden;">
+                                    <div style="background:#22c55e;height:16px;border-radius:4px;width:{ancho_pct}%;"></div>
+                                </div>
                             </div>
-                            <div style="background:#1e2128;border-radius:4px;height:16px;width:100%;">
-                                <div style="background:{color_barra};height:16px;border-radius:4px;width:{ancho_pct}%;"></div>
-                            </div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.markdown(
+                            """<div style="height:34px;"></div>""",
+                            unsafe_allow_html=True,
+                        )
 
-                with col_info:
-                    st.caption(f"OI {fila['oi']:,.0f} ·{cambio_txt}")
+            # --- Encabezado de columnas (CALL / PUT) ---
+            col_h_call, col_h_precio, col_h_put = st.columns([2.4, 1.1, 2.4])
+            with col_h_call:
+                st.markdown(
+                    """<div style="text-align:right;font-size:12px;font-weight:600;color:#fca5a5;">🔴 CALL</div>""",
+                    unsafe_allow_html=True,
+                )
+            with col_h_precio:
+                st.markdown(
+                    """<div style="text-align:center;font-size:12px;font-weight:600;color:var(--text-secondary, #9aa0a6);">precio</div>""",
+                    unsafe_allow_html=True,
+                )
+            with col_h_put:
+                st.markdown(
+                    """<div style="text-align:left;font-size:12px;font-weight:600;color:#86efac;">🟢 PUT</div>""",
+                    unsafe_allow_html=True,
+                )
 
-            # --- Strikes por arriba del precio (más alto primero, el más cercano al precio queda último = pegado al separador) ---
-            for fila in reversed(filas_arriba):
-                _render_fila_heatmap(fila)
+            st.markdown(
+                """<div style="border-top:0.5px solid #3a3a3a;margin:4px 0 6px 0;"></div>""",
+                unsafe_allow_html=True,
+            )
+
+            # --- Strikes por arriba del precio (más alto primero, el más cercano queda pegado al separador) ---
+            for strike in reversed(strikes_arriba):
+                lado = agrupado_por_strike[strike]
+                _render_fila_book(strike, lado["call"], lado["put"])
 
             # --- Separador: PRECIO ACTUAL cruzando el eje en su posición real ---
             st.markdown(
                 f"""
-                <div style="display:flex;align-items:center;margin:6px 0;padding:6px 10px;
+                <div style="display:flex;align-items:center;justify-content:center;margin:6px 0;padding:6px 10px;
                 background:rgba(255,140,0,0.15);border-top:1px solid #ff8c00;border-bottom:1px solid #ff8c00;">
-                    <span style="font-size:14px;font-weight:700;color:#ff8c00;">💲 ${precio_actual:,.0f}</span>
-                    <span style="font-size:11px;color:#ff8c00;margin-left:10px;">precio actual</span>
+                    <span style="font-size:14px;font-weight:700;color:#ff8c00;">💲 ${precio_actual:,.0f} precio actual</span>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-            # --- Strikes por debajo del precio (más cercano al precio primero = pegado al separador, bajando) ---
-            for fila in filas_abajo:
-                _render_fila_heatmap(fila)
+            # --- Strikes por debajo del precio (más cercano primero, bajando) ---
+            for strike in strikes_abajo:
+                lado = agrupado_por_strike[strike]
+                _render_fila_book(strike, lado["call"], lado["put"])
 
             st.divider()
 
             # ----------------------------------
-            # TABLA AMPLIADA: GREEKS POR STRIKE (Delta · Vega · Theta · Gamma)
+            # GREEKS POR STRIKE — MISMO FORMATO BOOK (Delta · Vega · Theta)
             # ----------------------------------
             #
-            # Pedido del usuario: que la tabla muestre, además de OI/Gamma/
-            # Score, los Greeks completos (Delta, Vega, Theta) y una lectura
-            # de cómo decae cada contrato hacia su vencimiento. IMPORTANTE
-            # (límite honesto, ya conversado): esto describe el COMPORTAMIENTO
-            # del contrato de opción (cuánto pierde valor por día, cuán
-            # sensible es a la IV, qué probabilidad implícita le asigna el
-            # mercado), no predice CUÁNDO se va a mover el precio de BTC.
-            # No hay una "ecuación" válida que combine estos Greeks en un
-            # timing de ruptura — eso sería decoración matemática, no
-            # análisis. Por eso la columna se llama "Lectura de decaimiento"
-            # y no "Próximo movimiento" ni similar.
+            # FIX (pedido del usuario): este bloque antes era un
+            # st.dataframe plano (sin colores ni barras, perdía la
+            # jerarquía visual del heatmap de arriba). Ahora usa el MISMO
+            # formato de book de profundidad: una fila por strike, Delta
+            # de CALL a la izquierda, Delta de PUT a la derecha (mismo
+            # criterio de escala independiente por lado que el heatmap de
+            # OI), con Vega/Theta/Gamma y la lectura de decaimiento como
+            # texto debajo de cada lado.
             #
-            # Delta/Vega/Theta se calculan dos veces por fila (lado pedido y
-            # lado opuesto, mismo strike y vencimiento de referencia — ver
-            # _calcular_score_strikes), porque cada strike de Deribit tiene
-            # contratos call Y put como instrumentos separados.
+            # IMPORTANTE (límite honesto, ya conversado): esto describe el
+            # COMPORTAMIENTO del contrato de opción (cuánto pierde valor
+            # por día, cuán sensible es a la IV, qué probabilidad
+            # implícita le asigna el mercado), no predice CUÁNDO se va a
+            # mover el precio de BTC. No hay una "ecuación" válida que
+            # combine estos Greeks en un timing de ruptura — eso sería
+            # decoración matemática, no análisis. Por eso la lectura se
+            # llama "decaimiento del contrato" y no "próximo movimiento".
 
-            tabla_df = pd.DataFrame([
-                {
-                    "Tipo": "CALL" if f["tipo"] == "call" else "PUT",
-                    "Strike": f"${f['strike']:,.0f}",
-                    "OI": f"{f['oi']:,.0f}",
-                    "Delta": f"{f['delta']:+.2f}",
-                    "Gamma": f"{f['gamma']:.6f}",
-                    "Vega": f"{f['vega']:.2f}",
-                    "Theta/día": f"{f['theta']:.2f}",
-                    "Delta (lado opuesto)": f"{f['delta_otro_lado']:+.2f}",
-                    "Días a venc.": f"{f['dias_a_vencimiento']:.1f}",
-                    "Distancia %": f"{f['distancia_pct']:+.2f}%",
-                    "Score (magnetismo)": round(f["score"], 6),
-                    "Lectura de decaimiento": f["lectura_decaimiento"],
-                }
-                for f in tabla_strikes
-            ])
+            st.subheader(
+                "📐 Greeks por strike — Delta · Vega · Theta · Gamma",
+                help=(
+                    "Mismo formato de book que el heatmap de OI: Delta de CALL a la "
+                    "izquierda (barra = |delta|, de 0 a 1), Delta de PUT a la derecha "
+                    "(barra = |delta|, de 0 a 1). Delta ≈ probabilidad implícita del "
+                    "modelo de terminar in-the-money (no es una garantía estadística). "
+                    "Vega/Theta/Gamma y la lectura de decaimiento describen el "
+                    "comportamiento del contrato hacia su vencimiento, no predicen el "
+                    "momento ni la dirección del próximo movimiento de precio."
+                ),
+            )
 
-            st.dataframe(tabla_df, use_container_width=True, hide_index=True)
+            def _render_fila_greeks(strike, lado_call, lado_put):
+                """
+                Fila de Greeks en formato book: barra de |Delta| de CALL
+                a la izquierda, precio al centro, barra de |Delta| de PUT
+                a la derecha. Vega/Theta/Gamma y la lectura de decaimiento
+                van como texto chico debajo de cada barra.
+                """
+
+                col_call, col_precio, col_put = st.columns([2.6, 1.1, 2.6])
+
+                with col_call:
+                    if lado_call:
+                        ancho_pct = max(round(abs(lado_call["delta"]) * 100), 2)
+                        st.markdown(
+                            f"""
+                            <div style="display:flex;flex-direction:column;align-items:flex-end;">
+                                <div style="font-size:10px;color:#fca5a5;margin-bottom:2px;">
+                                    Δ {lado_call['delta']:+.2f} · ν {lado_call['vega']:.1f} · θ {lado_call['theta']:.1f} · Γ {lado_call['gamma']:.6f}
+                                </div>
+                                <div style="background:#1e2128;border-radius:4px;height:14px;width:100%;display:flex;justify-content:flex-end;overflow:hidden;">
+                                    <div style="background:#ef4444;height:14px;border-radius:4px;width:{ancho_pct}%;"></div>
+                                </div>
+                                <div style="font-size:9px;color:#9a9a9a;margin-top:2px;text-align:right;">
+                                    {lado_call['lectura_decaimiento']}
+                                </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.markdown("""<div style="height:48px;"></div>""", unsafe_allow_html=True)
+
+                with col_precio:
+                    st.markdown(
+                        f"""<div style="text-align:center;font-size:14px;font-weight:600;color:#e5e5e5;padding-top:6px;">
+                        ${strike:,.0f}
+                        </div>""",
+                        unsafe_allow_html=True,
+                    )
+
+                with col_put:
+                    if lado_put:
+                        ancho_pct = max(round(abs(lado_put["delta"]) * 100), 2)
+                        st.markdown(
+                            f"""
+                            <div style="display:flex;flex-direction:column;align-items:flex-start;">
+                                <div style="font-size:10px;color:#86efac;margin-bottom:2px;">
+                                    Δ {lado_put['delta']:+.2f} · ν {lado_put['vega']:.1f} · θ {lado_put['theta']:.1f} · Γ {lado_put['gamma']:.6f}
+                                </div>
+                                <div style="background:#1e2128;border-radius:4px;height:14px;width:100%;overflow:hidden;">
+                                    <div style="background:#22c55e;height:14px;border-radius:4px;width:{ancho_pct}%;"></div>
+                                </div>
+                                <div style="font-size:9px;color:#9a9a9a;margin-top:2px;text-align:left;">
+                                    {lado_put['lectura_decaimiento']}
+                                </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.markdown("""<div style="height:48px;"></div>""", unsafe_allow_html=True)
+
+            # --- Encabezado ---
+            col_hg_call, col_hg_precio, col_hg_put = st.columns([2.6, 1.1, 2.6])
+            with col_hg_call:
+                st.markdown(
+                    """<div style="text-align:right;font-size:12px;font-weight:600;color:#fca5a5;">🔴 CALL — |Delta|</div>""",
+                    unsafe_allow_html=True,
+                )
+            with col_hg_precio:
+                st.markdown(
+                    """<div style="text-align:center;font-size:12px;font-weight:600;color:var(--text-secondary, #9aa0a6);">precio</div>""",
+                    unsafe_allow_html=True,
+                )
+            with col_hg_put:
+                st.markdown(
+                    """<div style="text-align:left;font-size:12px;font-weight:600;color:#86efac;">🟢 PUT — |Delta|</div>""",
+                    unsafe_allow_html=True,
+                )
+
+            st.markdown(
+                """<div style="border-top:0.5px solid #3a3a3a;margin:4px 0 6px 0;"></div>""",
+                unsafe_allow_html=True,
+            )
+
+            for strike in reversed(strikes_arriba):
+                lado = agrupado_por_strike[strike]
+                _render_fila_greeks(strike, lado["call"], lado["put"])
+
+            st.markdown(
+                f"""
+                <div style="display:flex;align-items:center;justify-content:center;margin:6px 0;padding:6px 10px;
+                background:rgba(255,140,0,0.15);border-top:1px solid #ff8c00;border-bottom:1px solid #ff8c00;">
+                    <span style="font-size:14px;font-weight:700;color:#ff8c00;">💲 ${precio_actual:,.0f} precio actual</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            for strike in strikes_abajo:
+                lado = agrupado_por_strike[strike]
+                _render_fila_greeks(strike, lado["call"], lado["put"])
 
             st.caption(
-                "⚠️ Score = OI x gamma x peso tiempo x peso distancia (mismo cálculo "
-                "que determina las Walls). Delta ≈ probabilidad implícita (bajo el "
-                "modelo, no garantía estadística) de terminar in-the-money. Vega = "
-                "sensibilidad a 1 punto de IV. Theta/día = pérdida de valor diaria del "
-                "contrato, todo lo demás constante. 'Lectura de decaimiento' describe "
-                "el comportamiento del CONTRATO hacia su vencimiento — no predice "
-                "cuándo ni hacia dónde se va a mover el precio de BTC. Ningún campo de "
-                "esta tabla es una señal de entrada o salida."
+                "⚠️ Δ (delta) ≈ probabilidad implícita (bajo el modelo, no garantía "
+                "estadística) de terminar in-the-money. ν (vega) = sensibilidad a 1 "
+                "punto de IV. θ (theta) = pérdida de valor diaria del contrato, todo "
+                "lo demás constante. Γ (gamma) ya determina el score de las Walls. La "
+                "lectura de decaimiento describe el comportamiento del CONTRATO hacia "
+                "su vencimiento — no predice cuándo ni hacia dónde se va a mover el "
+                "precio de BTC. Ningún campo de este panel es una señal de entrada o salida."
             )
 
     st.divider()
