@@ -1524,11 +1524,11 @@ def detectar_absorcion(df, lookback=20, umbral_volumen=1.3, umbral_rango=0.75):
     return hay_absorcion, detalle
 with tab_dashboard:
 
-    # ----------------------------------
-    # DATOS BTC (ticker)
-    # ----------------------------------
+# ----------------------------------
+# DATOS BTC (ticker)
+# ----------------------------------
 
-    try:
+try:
         ticker = obtener_ticker()
 
         if "error" in ticker:
