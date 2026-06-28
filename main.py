@@ -2853,12 +2853,10 @@ with tab_opciones:
                 ),
             )
 
-            def _render_fila_greeks(strike, lado_call, lado_put):
+                 def _render_fila_greeks(strike, lado_call, lado_put):
                 """
-                Fila de Greeks en formato book: barra de |Delta| de CALL
-                a la izquierda, precio al centro, barra de |Delta| de PUT
-                a la derecha. Vega/Theta/Gamma y la lectura de decaimiento
-                van como texto chico debajo de cada barra.
+                Fila de Greeks en formato horizontal (pedido del usuario):
+                Delta · Vega · Theta · Gamma en una sola línea arriba de la barra.
                 """
 
                 col_call, col_precio, col_put = st.columns([2.6, 1.1, 2.6])
@@ -2869,16 +2867,16 @@ with tab_opciones:
                         st.markdown(
                             f"""
                             <div style="display:flex;flex-direction:column;align-items:flex-end;">
-                                <div style="font-size:10px;color:#fca5a5;line-height:1.5;">
-                                    <div>Δ {lado_call['delta']:+.2f}</div>
-                                    <div>ν {lado_call['vega']:.1f}</div>
-                                    <div>θ {lado_call['theta']:.1f}</div>
-                                    <div>Γ {lado_call['gamma']:.6f}</div>
+                                <div style="font-size:10.5px;color:#fca5a5;line-height:1.35;margin-bottom:4px;">
+                                    Δ <b>{lado_call['delta']:+.3f}</b> &nbsp;&nbsp;
+                                    ν <b>{lado_call['vega']:.2f}</b> &nbsp;&nbsp;
+                                    θ <b>{lado_call['theta']:.2f}</b> &nbsp;&nbsp;
+                                    Γ <b>{lado_call['gamma']:.6f}</b>
                                 </div>
-                                <div style="background:#1e2128;border-radius:4px;height:14px;width:100%;display:flex;justify-content:flex-end;overflow:hidden;margin-top:4px;">
-                                    <div style="background:#ef4444;height:14px;border-radius:4px;width:{ancho_pct}%;"></div>
+                                <div style="background:#1e2128;border-radius:4px;height:16px;width:100%;display:flex;justify-content:flex-end;overflow:hidden;">
+                                    <div style="background:#ef4444;height:16px;border-radius:4px;width:{ancho_pct}%;"></div>
                                 </div>
-                                <div style="font-size:9px;color:#9a9a9a;margin-top:2px;text-align:right;">
+                                <div style="font-size:9px;color:#9a9a9a;margin-top:3px;text-align:right;">
                                     {lado_call['lectura_decaimiento']}
                                 </div>
                             </div>
@@ -2886,11 +2884,11 @@ with tab_opciones:
                             unsafe_allow_html=True,
                         )
                     else:
-                        st.markdown("""<div style="height:90px;"></div>""", unsafe_allow_html=True)
+                        st.markdown("""<div style="height:85px;"></div>""", unsafe_allow_html=True)
 
                 with col_precio:
                     st.markdown(
-                        f"""<div style="text-align:center;font-size:14px;font-weight:600;color:#e5e5e5;padding-top:6px;">
+                        f"""<div style="text-align:center;font-size:14px;font-weight:600;color:#e5e5e5;padding-top:8px;">
                         ${strike:,.0f}
                         </div>""",
                         unsafe_allow_html=True,
@@ -2902,16 +2900,16 @@ with tab_opciones:
                         st.markdown(
                             f"""
                             <div style="display:flex;flex-direction:column;align-items:flex-start;">
-                                <div style="font-size:10px;color:#86efac;line-height:1.5;">
-                                    <div>Δ {lado_put['delta']:+.2f}</div>
-                                    <div>ν {lado_put['vega']:.1f}</div>
-                                    <div>θ {lado_put['theta']:.1f}</div>
-                                    <div>Γ {lado_put['gamma']:.6f}</div>
+                                <div style="font-size:10.5px;color:#86efac;line-height:1.35;margin-bottom:4px;">
+                                    Δ <b>{lado_put['delta']:+.3f}</b> &nbsp;&nbsp;
+                                    ν <b>{lado_put['vega']:.2f}</b> &nbsp;&nbsp;
+                                    θ <b>{lado_put['theta']:.2f}</b> &nbsp;&nbsp;
+                                    Γ <b>{lado_put['gamma']:.6f}</b>
                                 </div>
-                                <div style="background:#1e2128;border-radius:4px;height:14px;width:100%;overflow:hidden;margin-top:4px;">
-                                    <div style="background:#22c55e;height:14px;border-radius:4px;width:{ancho_pct}%;"></div>
+                                <div style="background:#1e2128;border-radius:4px;height:16px;width:100%;overflow:hidden;">
+                                    <div style="background:#22c55e;height:16px;border-radius:4px;width:{ancho_pct}%;"></div>
                                 </div>
-                                <div style="font-size:9px;color:#9a9a9a;margin-top:2px;text-align:left;">
+                                <div style="font-size:9px;color:#9a9a9a;margin-top:3px;text-align:left;">
                                     {lado_put['lectura_decaimiento']}
                                 </div>
                             </div>
@@ -2919,8 +2917,8 @@ with tab_opciones:
                             unsafe_allow_html=True,
                         )
                     else:
-                        st.markdown("""<div style="height:90px;"></div>""", unsafe_allow_html=True)
-
+                        st.markdown("""<div style="height:85px;"></div>""", unsafe_allow_html=True)
+                        
             # --- Encabezado ---
             col_hg_call, col_hg_precio, col_hg_put = st.columns([2.6, 1.1, 2.6])
             with col_hg_call:
