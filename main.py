@@ -1544,19 +1544,8 @@ with tab_dashboard:
 
         with c2:
             if modo == "Scalp":
-                # Intenta calcular cambio de ~1 hora de forma segura
-                if 'df_15m' in locals() and not df_15m.empty and len(df_15m) >= 4:
-                    precio_1h_atras = df_15m["close"].iloc[-4]
-                    cambio_short = ((precio - precio_1h_atras) / precio_1h_atras) * 100
-                    st.metric("Cambio 1H", f"{cambio_short:+.2f}%",
-                             help="Cambio aproximado en la última hora - más útil para Scalp")
-                elif not df.empty and len(df) >= 12:
-                    precio_1h_atras = df["close"].iloc[-12]
-                    cambio_short = ((precio - precio_1h_atras) / precio_1h_atras) * 100
-                    st.metric("Cambio ~1H", f"{cambio_short:+.2f}%",
-                             help="Cambio aproximado en el timeframe actual")
-                else:
-                    st.metric("Cambio 24h", f"{cambio_24h:+.2f}%")
+                st.metric("Cambio 24h", f"{cambio_24h:+.2f}%", 
+                         help="En Modo Scalp se muestra 24h por simplicidad (1H se calcula más abajo)")
             else:
                 st.metric("Cambio 24h", f"{cambio_24h:+.2f}%")
 
@@ -1570,6 +1559,7 @@ with tab_dashboard:
             detalle_tecnico=str(e),
             contexto="No se pudo obtener el precio de BTC (vía proxy).",
         )
+ 
     # ----------------------------------
     # FETCH ÚNICO DE VELAS POR TIMEFRAME
     # (FIX: antes se pedían las mismas velas hasta 3 veces por refresh)
