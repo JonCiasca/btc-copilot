@@ -1525,7 +1525,7 @@ def detectar_absorcion(df, lookback=20, umbral_volumen=1.3, umbral_rango=0.75):
 with tab_dashboard:
 
 
-    # ----------------------------------
+       # ----------------------------------
     # DATOS BTC (ticker)
     # ----------------------------------
 
@@ -1536,33 +1536,30 @@ with tab_dashboard:
             raise ConnectionError(ticker["error"])
 
         precio = float(ticker["lastPrice"])
-        cambio = float(ticker["priceChangePercent"])
+        cambio_24h = float(ticker["priceChangePercent"])
         volumen = float(ticker["volume"])
 
-     c1, c2, c3 = st.columns(3)
+        c1, c2, c3 = st.columns(3)
 
         with c1:
             st.metric("Precio BTC", f"${precio:,.2f}")
 
         with c2:
             if modo == "Scalp":
-                # Cambio más corto para scalp
-                cambio_short = float(ticker.get("priceChangePercent", 0))  # esto es 24h por defecto
-                # Podemos calcular cambio aproximado de 1h o 4h usando las velas
+                # Cambio más relevante para scalp (1 hora)
                 if not df.empty and len(df) >= 12:
-                    cambio_1h = ((precio - df["close"].iloc[-12]) / df["close"].iloc[-12]) * 100 if len(df) >= 12 else 0
-                    st.metric("Cambio 1H", f"{cambio_1h:+.2f}%", help="Más relevante para Scalp")
+                    precio_1h_atras = df["close"].iloc[-12] if len(df) > 12 else df["close"].iloc[0]
+                    cambio_1h = ((precio - precio_1h_atras) / precio_1h_atras) * 100
+                    st.metric("Cambio 1H", f"{cambio_1h:+.2f}%", 
+                             help="Cambio aproximado en la última hora - más útil para Scalp")
                 else:
-                    st.metric("Cambio 24h", f"{cambio:+.2f}%")
+                    st.metric("Cambio 24h", f"{cambio_24h:+.2f}%")
             else:
-                st.metric("Cambio 24h", f"{cambio:+.2f}%")
+                st.metric("Cambio 24h", f"{cambio_24h:+.2f}%")
 
         with c3:
             st.metric("Volumen BTC", f"{volumen:,.0f}")
-            
-        # Indicador chico y discreto de que la conexión con el proxy/Binance
-        # está funcionando en este ciclo (pedido del usuario: que se vea
-        # claramente cuándo el dashboard SÍ está conectado al mercado).
+
         st.caption("🟢 Conectado al mercado")
 
     except Exception as e:
@@ -1570,7 +1567,6 @@ with tab_dashboard:
             detalle_tecnico=str(e),
             contexto="No se pudo obtener el precio de BTC (vía proxy).",
         )
-
     # ----------------------------------
     # FETCH ÚNICO DE VELAS POR TIMEFRAME
     # (FIX: antes se pedían las mismas velas hasta 3 veces por refresh)
