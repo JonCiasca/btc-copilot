@@ -2296,119 +2296,107 @@ with tab_dashboard:
             ),
         )
 
-        # ----------------------------------
-        # DEALER SCORE V2 — más granular
-        # FIX: antes eran 4 condiciones binarias de 25 pts cada una (todo
-        # o nada). Ahora cada componente aporta una porción proporcional
-        # a qué tan fuerte es la señal, no solo si está presente o no.
-        # ----------------------------------
+                # =============================================
+        # SCALP EDGE SCORE + DEALER SCORE TUNED
+        # =============================================
 
+        # --- SCALP EDGE SCORE (prioridad alta para tu estilo) ---
+        scalp_edge = 0.0
+
+        # 1. Absorción cerca de nivel Imán (muy fuerte para scalp)
+        cerca_de_nivel = nivel_mas_cercano(precio_actual, soportes, resistencias)
+        en_zona_relevante = cerca_de_nivel is not None and cerca_de_nivel[2] < 0.25
+
+        if hay_absorcion and en_zona_relevante:
+            scalp_edge += 35
+        elif detalle_absorcion and detalle_absorcion["score"] >= 65:
+            scalp_edge += 18
+
+        # 2. Flip Local + Gamma Zone
+        if resultado_flip_local and resultado_flip_local.get("flip_point"):
+            dist_flip_local = abs(resultado_flip_local["flip_point"] - precio_actual) / precio_actual * 100
+            if dist_flip_local < 0.8:  # muy cerca
+                scalp_edge += 25
+            elif dist_flip_local < 1.5:
+                scalp_edge += 15
+
+        # 3. Velocidad + Presión en timeframe operativo
+        if estado_velocidad == "acelerando":
+            scalp_edge += 15 if buy_pressure > 58 else 8
+        elif estado_velocidad == "desacelerando" and hay_absorcion:
+            scalp_edge += 22
+
+        # 4. Presión taker fuerte
+        if buy_pressure > 65 or sell_pressure > 65:
+            scalp_edge += 12
+
+        # 5. Distancia a Wall más cercana
+        if call_wall or put_wall:
+            dist_wall = min(
+                abs((call_wall["strike"] - precio_actual) / precio_actual * 100) if call_wall else 999,
+                abs((put_wall["strike"] - precio_actual) / precio_actual * 100) if put_wall else 999
+            )
+            if dist_wall < 0.6:
+                scalp_edge += 10
+
+        scalp_edge = round(min(scalp_edge, 100))
+
+        # --- Dealer Score mejorado (mantener compatibilidad) ---
         dealer_score = 0.0
 
-        # Funding: aporta hasta 25, proporcional a la magnitud (capado en 0.05%)
-        if funding_disponible:
-            magnitud_funding = min(abs(funding_valor) / 0.05, 1.0)
-            if funding_valor > 0:
-                dealer_score += 25 * magnitud_funding
-            # funding negativo no resta, pero tampoco suma (es info aparte, ver Institucional)
+        # Reducimos peso de Funding y OI global (son más lentos)
+        if funding_disponible and funding_valor > 0:
+            dealer_score += 12 * min(abs(funding_valor) / 0.05, 1.0)
 
-        # OI: aporta hasta 25, proporcional a cuánto supera el umbral de referencia
         if oi_disponible:
-            exceso_oi = max(0.0, (oi_valor - 90000) / 90000)
-            dealer_score += 25 * min(exceso_oi * 5, 1.0)
+            dealer_score += 8 * min(max((oi_valor - 90000) / 90000, 0), 1.0)
 
-        # Presión compradora: aporta hasta 25, proporcional al desbalance
-        desbalance_presion = (buy_pressure - 50) / 50  # -1 a 1
-        dealer_score += 25 * max(0.0, desbalance_presion)
+        # Aumentamos peso en presión y microestructura
+        desbalance_presion = (buy_pressure - 50) / 50
+        dealer_score += 30 * max(0.0, desbalance_presion)
 
-        # Tendencia 1H: aporta hasta 25, proporcional a la distancia a la SMA20
-        dist_sma_1h = (df_1h["close"].iloc[-1] - df_1h["close"].tail(20).mean()) / df_1h["close"].iloc[-1] * 100
-        dealer_score += 25 * min(max(dist_sma_1h, 0) / 0.5, 1.0)
+        # Tendencia activa (del timeframe operativo)
+        if "Alcista" in tendencia_activa:
+            dealer_score += 20
+        elif "Bajista" in tendencia_activa:
+            dealer_score += 18
 
         dealer_score = round(min(dealer_score, 100))
 
-        st.metric(
-            "Dealer Score", f"{dealer_score}/100",
-            help=(
-                "0 a 100. Más alto = más señales alineadas a favor de continuidad "
-                "alcista (funding pagando largos, OI creciendo, presión compradora, "
-                "precio por encima de su media de 1H). No mide si el mercado va a "
-                "subir o bajar en sí, mide cuántas señales coinciden entre ellas. "
-                "Por debajo de 50: las señales están mezcladas o en contra."
-            ),
-        )
+        # Mostramos ambos scores
+        col_score1, col_score2 = st.columns(2)
+        with col_score1:
+            st.metric("**Scalp Edge Score**", f"{scalp_edge}/100", 
+                     help="Score optimizado para scalp corto (stops 250-350, targets 500-1200). Prioriza absorción, Flip Local y microflujo.")
+        with col_score2:
+            st.metric("Dealer Score", f"{dealer_score}/100")
 
-        # ----------------------------------
-        # MARKET MAKER vs RETAIL (proxy por convergencia de señales)
-        # Aclaración honesta: esto NO es un dato confirmado de quién opera,
-        # es una inferencia por convergencia de proxies típicos:
-        # - funding extremo + volumen alto -> apalancamiento retail
-        # - absorción (mucho volumen, poco rango) -> comportamiento de MM/dealer
-        # - movimiento "limpio" sin mucho volumen -> participación institucional
-        # ----------------------------------
+        # --- Recomendación clara ---
+        if scalp_edge >= 75:
+            recomendacion = "🟢 **ALTA CONFLUENCIA SCALP** — Buscar entrada en dirección de tendencia con confluencia de absorción + Flip Local."
+        elif scalp_edge >= 55:
+            recomendacion = "🟡 **Oportunidad moderada** — Vigilar reacción en próximo nivel Imán."
+        else:
+            recomendacion = "🔴 **Esperar mejor setup** — Baja confluencia para scalp."
 
+        st.info(recomendacion)
+
+        # Actor dominante (mejorado)
         mm_score = 0
         retail_proxy_score = 0
 
-        if hay_absorcion:
-            mm_score += 2  # absorber flujo sin mover precio es comportamiento típico de MM/dealer
+        if hay_absorcion: mm_score += 3
+        if estado_velocidad == "desacelerando" and hay_absorcion: mm_score += 2
+        if estado_velocidad == "acelerando" and buy_pressure > 62: retail_proxy_score += 2
 
-        if funding_disponible and abs(funding_valor) > 0.02:
-            retail_proxy_score += 2  # funding muy estirado = apalancamiento retail unidireccional
-
-        if estado_velocidad == "desacelerando" and hay_absorcion:
-            mm_score += 1  # impulso frenando justo donde hay absorción = MM defendiendo nivel
-
-        if estado_velocidad == "acelerando" and not hay_absorcion:
-            retail_proxy_score += 1  # impulso acelerando sin absorción = flujo retail persiguiendo precio
-
-        if mm_score > retail_proxy_score:
-            actor_dominante = "🏦 Posible Market Maker"
-        elif retail_proxy_score > mm_score:
-            actor_dominante = "👤 Posible Retail"
+        if mm_score >= 3:
+            actor_dominante = "🏦 **Market Maker defendiendo**"
+        elif retail_proxy_score >= 2:
+            actor_dominante = "👤 **Retail impulsando**"
         else:
-            actor_dominante = "⚖️ Sin señal clara"
+            actor_dominante = "⚖️ Equilibrio"
 
-        st.caption(f"Actor dominante (estimado): {actor_dominante}")
-
-        # -----------------------------
-        # LECTURA ESTADO INTELIGENTE
-        # (Movida adentro de la columna Estado: antes vivía suelta debajo
-        # de las 4 columnas, atravesando todo el ancho, lo que la hacía
-        # parecer un resumen general del dashboard cuando en realidad es
-        # parte específica del análisis de Estado/Dealer Score.)
-        # -----------------------------
-
-        if dealer_score >= 75:
-            estado_general = "🟢 Condiciones favorables"
-        elif dealer_score >= 50:
-            estado_general = "🟡 Mercado mixto"
-        else:
-            estado_general = "🔴 Baja convicción"
-
-        if modo == "Scalp":
-            contexto_estado = (
-                "⚡ Modo Scalp activo\n"
-                "Evaluando microflujo, presión inmediata y reacción del precio."
-            )
-        else:
-            contexto_estado = (
-                "🧠 Modo Normal activo\n"
-                "Evaluando estructura, tendencia y participación."
-            )
-
-        aviso_datos = ""
-        if not funding_disponible or not oi_disponible:
-            aviso_datos = "\n\n⚠️ Datos de derivados no disponibles en este refresh."
-
-        st.info(
-            f"""
-    {estado_general}
-
-    {contexto_estado}{aviso_datos}
-    """
-        )
-
+        st.caption(f"Actor dominante: {actor_dominante}")
     # -----------------------------
     # INSTITUCIONAL
     # -----------------------------
