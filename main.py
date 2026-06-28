@@ -3386,82 +3386,79 @@ with tab_dashboard:
     """
     )
 
-    # -----------------------------
-    # CEREBRO GENERAL COPILOT
+       # -----------------------------
+    # CEREBRO GENERAL COPILOT - LECTURA SCALP MEJORADA
     # -----------------------------
 
     if modo == "Scalp":
 
-        # FIX: la lectura Scalp anterior solo combinaba presión + cambio_oi
-        # (las mismas señales del panel Presión/Flow). Ahora incorpora
-        # absorción y cercanía a niveles de liquidez, que es la metodología
-        # real del usuario: buscar ruptura de liquidez con continuación,
-        # o absorción de liquidez con rebote.
+        # Lectura adaptada a tu operativa real
+        # Stops: 140-350 USD | Targets: 500-1200 USD | Duración corta (minutos a ~1h)
 
-        cerca_de_nivel = nivel_mas_cercano(precio_actual, soportes, resistencias)
-        en_zona_relevante = cerca_de_nivel is not None and cerca_de_nivel[2] < 0.15
+        confluencia_scalp = scalp_edge  # Usamos el nuevo Scalp Edge Score que agregamos antes
 
-        if hay_absorcion and en_zona_relevante:
-            tipo_nivel = cerca_de_nivel[0]
+        if confluencia_scalp >= 78:
             lectura = (
-                f"⚡ Scalp: absorción detectada justo en zona de {tipo_nivel} "
-                f"(${cerca_de_nivel[1]:,.1f}). Escenario de posible rebote — "
-                "vigilar reacción antes de operar a favor de la ruptura."
+                "⚡ **SCALP ALTA CONFIANZA** — Excelente setup.\n\n"
+                "Absorción + Flip Local + presión fuerte alineados. "
+                f"Buscar entrada con stop de **140-250 USD** y target inicial **600-900 USD**. "
+                "Posible extensión hasta 1200 USD si mantiene momentum."
             )
 
-        elif en_zona_relevante and estado_velocidad == "acelerando" and not hay_absorcion:
-            tipo_nivel = cerca_de_nivel[0]
+        elif confluencia_scalp >= 62:
             lectura = (
-                f"⚡ Scalp: precio acelerando contra {tipo_nivel} "
-                f"(${cerca_de_nivel[1]:,.1f}) sin absorción visible. "
-                "Escenario de posible ruptura con continuación."
+                "⚡ **Scalp bueno / moderado** — Setup válido.\n\n"
+                "Hay confluencia aceptable (absorción o Flip Local cerca). "
+                f"Stop ajustado **180-300 USD**. Target primario **500-800 USD**, "
+                "dejar correr parte si rompe con volumen."
             )
 
-        elif buy_pressure > 60 and cambio_oi_flow > 0 and estado_velocidad != "desacelerando":
+        elif hay_absorcion and en_zona_relevante:
             lectura = (
-                "⚡ Scalp: impulso comprador con entrada de participación, "
-                "sin señales de agotamiento. Buscar confirmación en microestructura."
+                "⚡ **Absorción en zona clave** — Posible rebote.\n\n"
+                f"Precio cerca de nivel Imán con absorción detectada. "
+                "Ideal para scalp rápido: stop 140-220 USD, target 500-750 USD."
             )
 
-        elif sell_pressure > 60 and cambio_oi_flow > 0 and estado_velocidad != "desacelerando":
+        elif estado_velocidad == "acelerando" and (buy_pressure > 63 or sell_pressure > 63):
             lectura = (
-                "⚡ Scalp: presión vendedora con construcción de posiciones, "
-                "sin señales de agotamiento. Atención a continuación bajista."
+                "⚡ **Impulso fuerte en curso** — Momentum presente.\n\n"
+                f"Dirección clara con aceleración. "
+                "Stop detrás del último Imán (200-350 USD). Target 600-1100 USD."
             )
 
-        elif estado_velocidad == "desacelerando":
+        elif estado_velocidad == "desacelerando" and hay_absorcion:
             lectura = (
-                "⚡ Scalp: impulso perdiendo velocidad. "
-                "Posible agotamiento — evaluar absorción antes de seguir la dirección actual."
-            )
-
-        elif cambio_oi_flow < 0:
-            lectura = (
-                "⚡ Scalp: descarga de posiciones. "
-                "Movimiento perdiendo participación."
+                "⚡ **Posible agotamiento + absorción** — Cuidado.\n\n"
+                "Impulso perdiendo fuerza pero con absorción. "
+                "Mejor esperar confirmación de reversión o evitar operación."
             )
 
         else:
-            lectura = "⚡ Scalp: equilibrio. Esperando expansión de volatilidad."
+            lectura = (
+                "⚡ **Sin confluencia clara para scalp** — Esperar.\n\n"
+                "Baja alineación entre microflujo, niveles y velocidad. "
+                "Mejor no forzar operación hasta que aparezca absorción o Flip Local cercano."
+            )
+
+        st.info(lectura)
+
+        # Mini resumen de gestión de riesgo
+        st.caption(
+            f"**Gestión recomendada:** Stop {140 if confluencia_scalp >= 70 else 200}-{350} USD | "
+            f"Target mínimo 500-700 USD | R:R mínimo 1:2"
+        )
 
     else:
-
+        # Lectura para Modo Normal (sin cambios por ahora)
         if institucional_score > retail_score:
-            lectura = (
-                "🧠 Normal: control institucional dominante. "
-                "Analizando continuidad o absorción."
-            )
-
+            lectura = "🧠 Normal: control institucional dominante. Analizando continuidad."
         elif retail_score > institucional_score:
-            lectura = (
-                "🧠 Normal: presión retail predominante. "
-                "Evaluar posibles trampas."
-            )
-
+            lectura = "🧠 Normal: presión retail predominante. Evaluar posibles trampas."
         else:
             lectura = "🧠 Normal: mercado equilibrado esperando confirmación."
 
-    st.caption(f"📌 Lectura: {lectura}")
+        st.caption(f"📌 Lectura: {lectura}")
 
     st.divider()
     st.caption(
