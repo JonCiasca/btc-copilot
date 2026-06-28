@@ -3400,65 +3400,64 @@ with tab_dashboard:
 
     if modo == "Scalp":
 
-        # Lectura adaptada a tu operativa real
-        # Stops: 140-350 USD | Targets: 500-1200 USD | Duración corta (minutos a ~1h)
+        confluencia_scalp = scalp_edge
 
-        confluencia_scalp = scalp_edge  # Usamos el nuevo Scalp Edge Score que agregamos antes
+        # TP dinámico según confluencia
+        if confluencia_scalp >= 78:
+            tp_sugerido = "700-1200 USD"
+            stop_sugerido = "140-220 USD"
+            confianza = "ALTA"
+        elif confluencia_scalp >= 62:
+            tp_sugerido = "600-950 USD"
+            stop_sugerido = "180-280 USD"
+            confianza = "BUENA"
+        elif hay_absorcion and en_zona_relevante:
+            tp_sugerido = "550-850 USD"
+            stop_sugerido = "140-230 USD"
+            confianza = "MODERADA"
+        else:
+            tp_sugerido = "500-750 USD"
+            stop_sugerido = "200-350 USD"
+            confianza = "BAJA"
 
         if confluencia_scalp >= 78:
             lectura = (
-                "⚡ **SCALP ALTA CONFIANZA** — Excelente setup.\n\n"
-                "Absorción + Flip Local + presión fuerte alineados. "
-                f"Buscar entrada con stop de **140-250 USD** y target inicial **600-900 USD**. "
-                "Posible extensión hasta 1200 USD si mantiene momentum."
+                f"⚡ **SCALP {confianza}** — Excelente setup.\n\n"
+                f"Absorción + Flip Local + presión alineados.\n"
+                f"**Stop:** {stop_sugerido} | **TP inicial:** {tp_sugerido}\n"
+                "Dejar correr parte si rompe con volumen y momentum."
             )
-
         elif confluencia_scalp >= 62:
             lectura = (
-                "⚡ **Scalp bueno / moderado** — Setup válido.\n\n"
-                "Hay confluencia aceptable (absorción o Flip Local cerca). "
-                f"Stop ajustado **180-300 USD**. Target primario **500-800 USD**, "
-                "dejar correr parte si rompe con volumen."
+                f"⚡ **Scalp {confianza}** — Setup válido.\n\n"
+                f"Confluencia aceptable.\n"
+                f"**Stop:** {stop_sugerido} | **TP primario:** {tp_sugerido}"
             )
-
         elif hay_absorcion and en_zona_relevante:
             lectura = (
-                "⚡ **Absorción en zona clave** — Posible rebote.\n\n"
-                f"Precio cerca de nivel Imán con absorción detectada. "
-                "Ideal para scalp rápido: stop 140-220 USD, target 500-750 USD."
+                f"⚡ **Absorción en zona clave** — Posible rebote.\n\n"
+                f"**Stop:** {stop_sugerido} | **TP:** {tp_sugerido}"
             )
-
         elif estado_velocidad == "acelerando" and (buy_pressure > 63 or sell_pressure > 63):
             lectura = (
-                "⚡ **Impulso fuerte en curso** — Momentum presente.\n\n"
-                f"Dirección clara con aceleración. "
-                "Stop detrás del último Imán (200-350 USD). Target 600-1100 USD."
+                f"⚡ **Impulso fuerte** — Momentum presente.\n\n"
+                f"**Stop:** {stop_sugerido} | **TP:** {tp_sugerido}"
             )
-
-        elif estado_velocidad == "desacelerando" and hay_absorcion:
-            lectura = (
-                "⚡ **Posible agotamiento + absorción** — Cuidado.\n\n"
-                "Impulso perdiendo fuerza pero con absorción. "
-                "Mejor esperar confirmación de reversión o evitar operación."
-            )
-
         else:
             lectura = (
-                "⚡ **Sin confluencia clara para scalp** — Esperar.\n\n"
-                "Baja alineación entre microflujo, niveles y velocidad. "
-                "Mejor no forzar operación hasta que aparezca absorción o Flip Local cercano."
+                "⚡ **Sin confluencia clara para scalp** — Mejor esperar.\n\n"
+                "Esperar absorción o Flip Local cercano antes de operar."
             )
 
         st.info(lectura)
 
-        # Mini resumen de gestión de riesgo
         st.caption(
-            f"**Gestión recomendada:** Stop {140 if confluencia_scalp >= 70 else 200}-{350} USD | "
-            f"Target mínimo 500-700 USD | R:R mínimo 1:2"
+            f"**Gestión recomendada:** Stop {stop_sugerido} | "
+            f"TP {tp_sugerido} | R:R mínimo 1:2.5"
         )
 
     else:
-        # Lectura para Modo Normal (sin cambios por ahora)
+        # Lectura para Modo Normal
         if institucional_score > retail_score:
             lectura = "🧠 Normal: control institucional dominante. Analizando continuidad."
         elif retail_score > institucional_score:
