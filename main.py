@@ -1524,8 +1524,7 @@ def detectar_absorcion(df, lookback=20, umbral_volumen=1.3, umbral_rango=0.75):
     return hay_absorcion, detalle
 with tab_dashboard:
 
-
-       # ----------------------------------
+    # ----------------------------------
     # DATOS BTC (ticker)
     # ----------------------------------
 
@@ -1546,11 +1545,11 @@ with tab_dashboard:
 
         with c2:
             if modo == "Scalp":
-                # Cambio más relevante para scalp (1 hora)
-                if not df.empty and len(df) >= 12:
-                    precio_1h_atras = df["close"].iloc[-12] if len(df) > 12 else df["close"].iloc[0]
-                    cambio_1h = ((precio - precio_1h_atras) / precio_1h_atras) * 100
-                    st.metric("Cambio 1H", f"{cambio_1h:+.2f}%", 
+                # Calculamos cambio 1H usando df_15m o df_5m (ya están cargados antes)
+                if not df_15m.empty and len(df_15m) >= 4:
+                    precio_1h_atras = df_15m["close"].iloc[-4]   # ~1 hora en 15m
+                    cambio_short = ((precio - precio_1h_atras) / precio_1h_atras) * 100
+                    st.metric("Cambio 1H", f"{cambio_short:+.2f}%", 
                              help="Cambio aproximado en la última hora - más útil para Scalp")
                 else:
                     st.metric("Cambio 24h", f"{cambio_24h:+.2f}%")
@@ -1567,6 +1566,7 @@ with tab_dashboard:
             detalle_tecnico=str(e),
             contexto="No se pudo obtener el precio de BTC (vía proxy).",
         )
+  
     # ----------------------------------
     # FETCH ÚNICO DE VELAS POR TIMEFRAME
     # (FIX: antes se pedían las mismas velas hasta 3 veces por refresh)
