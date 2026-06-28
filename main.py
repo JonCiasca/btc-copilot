@@ -2853,7 +2853,7 @@ with tab_opciones:
                 ),
             )
 
-                 def _render_fila_greeks(strike, lado_call, lado_put):
+            def _render_fila_greeks(strike, lado_call, lado_put):
                 """
                 Fila de Greeks en formato horizontal (pedido del usuario):
                 Delta · Vega · Theta · Gamma en una sola línea arriba de la barra.
@@ -2861,7 +2861,7 @@ with tab_opciones:
 
                 col_call, col_precio, col_put = st.columns([2.6, 1.1, 2.6])
 
-                with col_call:
+            with col_call:
                     if lado_call:
                         ancho_pct = max(round(abs(lado_call["delta"]) * 100), 2)
                         st.markdown(
@@ -2883,10 +2883,10 @@ with tab_opciones:
                             """,
                             unsafe_allow_html=True,
                         )
-                    else:
+            else:
                         st.markdown("""<div style="height:85px;"></div>""", unsafe_allow_html=True)
 
-                with col_precio:
+            with col_precio:
                     st.markdown(
                         f"""<div style="text-align:center;font-size:14px;font-weight:600;color:#e5e5e5;padding-top:8px;">
                         ${strike:,.0f}
@@ -2894,7 +2894,7 @@ with tab_opciones:
                         unsafe_allow_html=True,
                     )
 
-                with col_put:
+            with col_put:
                     if lado_put:
                         ancho_pct = max(round(abs(lado_put["delta"]) * 100), 2)
                         st.markdown(
@@ -2916,7 +2916,7 @@ with tab_opciones:
                             """,
                             unsafe_allow_html=True,
                         )
-                    else:
+             else:
                         st.markdown("""<div style="height:85px;"></div>""", unsafe_allow_html=True)
                         
             # --- Encabezado ---
