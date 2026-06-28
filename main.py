@@ -1528,7 +1528,7 @@ with tab_dashboard:
 # DATOS BTC (ticker)
 # ----------------------------------
 
-        try:
+    try:
         ticker = obtener_ticker()
 
         if "error" in ticker:
