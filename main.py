@@ -1539,7 +1539,7 @@ with tab_dashboard:
         cambio = float(ticker["priceChangePercent"])
         volumen = float(ticker["volume"])
 
-    c1, c2, c3 = st.columns(3)
+     c1, c2, c3 = st.columns(3)
 
         with c1:
             st.metric("Precio BTC", f"${precio:,.2f}")
