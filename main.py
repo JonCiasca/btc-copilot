@@ -2548,7 +2548,7 @@ with tab_dashboard:
 
         cambio_precio = ((precio_actual - precio_inicio) / precio_inicio) * 100
 
-    cambio_oi_flow = cambio_oi
+        cambio_oi_flow = cambio_oi
 
         st.metric("Cambio Precio", f"{cambio_precio:.2f}%")
         st.metric("Cambio OI", f"{cambio_oi_flow:.2f}%")
