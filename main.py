@@ -2456,15 +2456,16 @@ with tab_dashboard:
                 st.caption("⏳ Último dato conocido, este refresh no pudo actualizar.")
         else:
             st.metric("Funding", "N/D")
-            # =============================================
-        # OPEN INTEREST MEJORADO (más sensible)
+                   # =============================================
+        # OPEN INTEREST MEJORADO (Binance + Bybit)
         # =============================================
 
         if oi is not None:
-            etiqueta_cache_oi = " ⏳" if oi_es_cache else ""
-            st.metric("Open Interest", f"{oi:,.0f}{etiqueta_cache_oi}")
+            etiqueta_fuente = f" ({fuente_oi})"
+            etiqueta_cache = " ⏳" if oi_es_cache else ""
+            st.metric("Open Interest", f"{oi:,.0f}{etiqueta_fuente}{etiqueta_cache}")
 
-            # Mejora: calculamos cambio en diferentes ventanas
+            # Cálculo de cambios
             if "oi_historial" not in st.session_state:
                 st.session_state.oi_historial = []
 
@@ -2476,7 +2477,7 @@ with tab_dashboard:
                 if oi_anterior > 0:
                     cambio_15s = round(((oi - oi_anterior) / oi_anterior) * 100, 4)
 
-            if len(st.session_state.oi_historial) >= 20:   # ~5 minutos
+            if len(st.session_state.oi_historial) >= 20:
                 oi_5min = st.session_state.oi_historial[-20]
                 if oi_5min > 0:
                     cambio_5min = round(((oi - oi_5min) / oi_5min) * 100, 3)
@@ -2485,11 +2486,11 @@ with tab_dashboard:
             if len(st.session_state.oi_historial) > 60:
                 st.session_state.oi_historial.pop(0)
 
-            st.caption(f"Cambio OI → Último refresh: {cambio_15s}% | Últimos ~5 min: **{cambio_5min}%**")
+            st.caption(f"Cambio OI → 15s: {cambio_15s}% | ~5min: **{cambio_5min}%**")
 
-            if abs(cambio_5min) > 0.30:
+            if abs(cambio_5min) > 0.35:
                 st.success("📈 OI creciendo fuerte" if cambio_5min > 0 else "📉 OI cayendo fuerte")
-            elif abs(cambio_5min) > 0.10:
+            elif abs(cambio_5min) > 0.12:
                 st.warning("📈 OI subiendo" if cambio_5min > 0 else "📉 OI bajando")
             else:
                 st.info("⚖️ OI estable")
