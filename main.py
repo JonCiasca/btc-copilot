@@ -2497,7 +2497,65 @@ with tab_dashboard:
         else:
             st.metric("Open Interest", "N/D")
           
-      
+        # CAMBIO OPEN INTEREST
+        # FIX (calibración): el OI de Binance Futures en BTCUSDT se mueve
+        # muy poco en 15s (típicamente 0.01%-0.05%), muy por debajo del
+        # umbral de 0.5% que se usaba antes -> la barra quedaba siempre en
+        # "estable" porque el umbral estaba pensado para otra cadencia.
+        #
+        # Ahora se calculan DOS cambios:
+        # - cambio_oi_inmediato: vs el refresh anterior (~15s) — sigue
+        #   existiendo porque lo usa Flow para la lectura de microestructura.
+        # - cambio_oi_ventana: vs el valor de ~10 refreshes atrás (~2.5 min)
+        #   — esto SÍ acumula suficiente movimiento como para que la barra
+        #   tenga rango dinámico real, en vez de oscilar entre 0 y 0.02%.
+        #
+        # El umbral de clasificación también se ajustó a un valor realista
+        # para el dato acumulado (0.15% en vez de 0.5%).
+
+        cambio_oi_inmediato = 0.0
+        cambio_oi_ventana = 0.0
+
+        if oi_disponible:
+
+            if len(st.session_state.oi_historial) > 0:
+                oi_anterior = st.session_state.oi_historial[-1]
+                if oi_anterior > 0:
+                    cambio_oi_inmediato = round(((oi_valor - oi_anterior) / oi_anterior) * 100, 4)
+
+            if len(st.session_state.oi_historial) >= 10:
+                oi_base_ventana = st.session_state.oi_historial[-10]
+                if oi_base_ventana > 0:
+                    cambio_oi_ventana = round(((oi_valor - oi_base_ventana) / oi_base_ventana) * 100, 2)
+            elif len(st.session_state.oi_historial) > 0:
+                # todavía no hay 10 puntos: usamos el más viejo disponible
+                oi_base_ventana = st.session_state.oi_historial[0]
+                if oi_base_ventana > 0:
+                    cambio_oi_ventana = round(((oi_valor - oi_base_ventana) / oi_base_ventana) * 100, 2)
+
+            st.session_state.oi_historial.append(oi_valor)
+
+            if len(st.session_state.oi_historial) > 20:
+                st.session_state.oi_historial.pop(0)
+
+        # cambio_oi se mantiene como nombre usado por Flow/lectura más abajo,
+        # pero ahora apunta al cambio de ventana (~2.5 min), más representativo
+        cambio_oi = cambio_oi_ventana
+
+        st.caption(f"Cambio OI (≈2.5 min): {cambio_oi_ventana}% · último refresh: {cambio_oi_inmediato}%")
+
+        UMBRAL_OI = 0.15  # antes 0.5, demasiado alto para el movimiento real acumulado
+
+        if cambio_oi_ventana > UMBRAL_OI:
+            st.success("📈 Participación entrando")
+        elif cambio_oi_ventana < -UMBRAL_OI:
+            st.warning("📉 Participación saliendo")
+        else:
+            st.info("⚖️ OI estable")
+
+        # Barra escalada a un rango más realista (antes dividía por 1 = 100%,
+        # necesitabas un cambio de 1% para llenar la barra; ahora por 0.5%)
+        st.progress(min(abs(cambio_oi_ventana) / 0.5, 1.0))
 
     # -----------------------------
     # PRESIÓN
