@@ -2038,7 +2038,6 @@ def procesar_oi_fuente(clave_session, oi_nuevo, ventana=10, tope=20):
         "cambio_pct": cambio_pct,
     }
 
-
 def render_metrica_oi(titulo, resultado_fuente, color_caption="#9aa0a6"):
     """
     Dibuja UNA métrica de Open Interest con su barra de cambio %,
@@ -2048,9 +2047,14 @@ def render_metrica_oi(titulo, resultado_fuente, color_caption="#9aa0a6"):
     venga después) -- una sola función, una sola barra por fuente,
     nunca una fuente pisando la barra de la otra.
     """
-
     if not resultado_fuente["disponible"]:
         st.metric(titulo, "N/D")
+        
+        # === DEBUG BYBIT ===
+        if titulo == "OI Bybit" and "bybit_error" in st.session_state:
+            st.error(f"🔍 Bybit Debug: {st.session_state.bybit_error}")
+            if st.button("Limpiar debug Bybit", key="clear_bybit"):
+                del st.session_state.bybit_error
         return
 
     etiqueta_cache = " ⏳" if resultado_fuente["es_cache"] else ""
@@ -2063,15 +2067,13 @@ def render_metrica_oi(titulo, resultado_fuente, color_caption="#9aa0a6"):
         st.progress(0.0)
     else:
         st.caption(f"Cambio (≈2.5 min): **{cambio:+.2f}%**")
-        # Barra escalada a un rango realista: 0.5% de cambio llena la
-        # barra por completo (mismo criterio que ya usaba el bloque
-        # original combinado, ahora aplicado por fuente).
         st.progress(min(abs(cambio) / 0.5, 1.0))
 
         if abs(cambio) > 0.35:
             st.caption("📈 Creciendo fuerte" if cambio > 0 else "📉 Cayendo fuerte")
         elif abs(cambio) > 0.12:
             st.caption("📈 Subiendo" if cambio > 0 else "📉 Bajando")
+
 with tab_dashboard:
 
 
