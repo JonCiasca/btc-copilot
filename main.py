@@ -392,31 +392,47 @@ def obtener_open_interest_bybit():
     """Obtiene Open Interest de Bybit (suele ser más reactivo)."""
     try:
         url = "https://api.bybit.com/v5/market/open-interest"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "application/json"
-        }
         params = {
             "category": "linear",
             "symbol": "BTCUSDT",
             "intervalTime": "5min"
         }
-        respuesta = requests.get(url, params=params, headers=headers, timeout=10)
-        
+        respuesta = requests.get(url, params=params, timeout=10)
+
+        # FIX: antes se asumía que la respuesta SIEMPRE era JSON válido.
+        # Si Bybit bloquea la IP de Streamlit Cloud (mismo problema que
+        # ya tenés documentado con Binance) o devuelve un error de
+        # Cloudflare, la respuesta es HTML, no JSON -> .json() explota
+        # con "Expecting property name enclosed in double quotes", que
+        # es justo el error que estás viendo. Ahora chequeamos el status
+        # y el content-type ANTES de parsear, para dar un mensaje claro.
+
         if respuesta.status_code != 200:
-            st.session_state["bybit_error"] = f"HTTP {respuesta.status_code} - {respuesta.text[:200]}"
+            st.session_state["bybit_error"] = (
+                f"HTTP {respuesta.status_code} — Bybit puede estar "
+                f"bloqueando la IP de Streamlit Cloud (mismo problema que "
+                f"tenemos con Binance). Respuesta cruda: {respuesta.text[:200]}"
+            )
             return None
 
-        data = respuesta.json()
-       
+        try:
+            data = respuesta.json()
+        except ValueError:
+            st.session_state["bybit_error"] = (
+                f"Bybit no devolvió JSON (probable bloqueo de IP o "
+                f"challenge anti-bot). Respuesta cruda: {respuesta.text[:200]}"
+            )
+            return None
+
         if data.get("retCode") == 0 and data.get("result", {}).get("list"):
             oi = float(data["result"]["list"][0]["openInterest"])
             return oi
         else:
             st.session_state["bybit_error"] = f"Bybit retCode: {data.get('retCode')} - Msg: {data.get('retMsg')}"
             return None
+
     except Exception as e:
-        st.session_state["bybit_error"] = f"Exception: {str(e)}"
+        st.session_state["bybit_error"] = str(e)
         return None
         
 with tab_dashboard:
