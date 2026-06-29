@@ -2251,7 +2251,7 @@ with tab_dashboard:
     if "ultimo_oi_valido" not in st.session_state:
         st.session_state.ultimo_oi_valido = None
 
-       funding = obtener_funding()
+    funding = obtener_funding()
 
     # Open Interest con fallback a Bybit
     oi_binance = obtener_open_interest()
