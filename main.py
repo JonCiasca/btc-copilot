@@ -2251,8 +2251,21 @@ with tab_dashboard:
     if "ultimo_oi_valido" not in st.session_state:
         st.session_state.ultimo_oi_valido = None
 
-    funding = obtener_funding()
-    oi = obtener_open_interest()
+       funding = obtener_funding()
+
+    # Open Interest con fallback a Bybit
+    oi_binance = obtener_open_interest()
+    oi_bybit = obtener_open_interest_bybit()
+
+    if oi_bybit is not None and oi_bybit > 0:
+        oi = oi_bybit
+        fuente_oi = "Bybit"
+    elif oi_binance is not None:
+        oi = oi_binance
+        fuente_oi = "Binance"
+    else:
+        oi = None
+        fuente_oi = "N/D"
 
     # FIX: en vez de mostrar N/D cada vez que un refresh de 15s falla
     # (timeout del proxy, Render dormido, etc.), usamos el último valor
