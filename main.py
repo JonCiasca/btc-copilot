@@ -387,6 +387,25 @@ def obtener_open_interest():
 
     except Exception:
         return None
+
+def obtener_open_interest_bybit():
+    """Obtiene Open Interest de Bybit (suele ser más reactivo)."""
+    try:
+        url = "https://api.bybit.com/v5/market/open-interest"
+        params = {
+            "category": "linear",
+            "symbol": "BTCUSDT",
+            "intervalTime": "5"
+        }
+        respuesta = requests.get(url, params=params, timeout=8)
+        data = respuesta.json()
+
+        if data.get("retCode") == 0 and data.get("result", {}).get("list"):
+            oi = float(data["result"]["list"][0]["openInterest"])
+            return oi
+        return None
+    except Exception:
+        return None
 with tab_dashboard:
 
 
