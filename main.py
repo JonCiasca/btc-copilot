@@ -395,7 +395,7 @@ def obtener_open_interest_bybit():
         params = {
             "category": "linear",
             "symbol": "BTCUSDT",
-            "intervalTime": "5min"
+            "intervalTime": "1min"
         }
         respuesta = requests.get(url, params=params, timeout=8)
         data = respuesta.json()
