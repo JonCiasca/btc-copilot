@@ -387,7 +387,7 @@ def obtener_open_interest():
 
     except Exception:
         return None
-
+    
 def obtener_open_interest_bybit():
     """Obtiene Open Interest de Bybit (suele ser más reactivo)."""
     try:
