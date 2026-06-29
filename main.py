@@ -392,25 +392,32 @@ def obtener_open_interest_bybit():
     """Obtiene Open Interest de Bybit (suele ser más reactivo)."""
     try:
         url = "https://api.bybit.com/v5/market/open-interest"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json"
+        }
         params = {
             "category": "linear",
             "symbol": "BTCUSDT",
             "intervalTime": "5min"
         }
-        respuesta = requests.get(url, params=params, timeout=10)
-        data = respuesta.json()
+        respuesta = requests.get(url, params=params, headers=headers, timeout=10)
         
+        if respuesta.status_code != 200:
+            st.session_state["bybit_error"] = f"HTTP {respuesta.status_code} - {respuesta.text[:200]}"
+            return None
+
+        data = respuesta.json()
+       
         if data.get("retCode") == 0 and data.get("result", {}).get("list"):
             oi = float(data["result"]["list"][0]["openInterest"])
             return oi
         else:
-            # Mostrar error para debug
             st.session_state["bybit_error"] = f"Bybit retCode: {data.get('retCode')} - Msg: {data.get('retMsg')}"
             return None
     except Exception as e:
-        st.session_state["bybit_error"] = str(e)
+        st.session_state["bybit_error"] = f"Exception: {str(e)}"
         return None
-
         
 with tab_dashboard:
 
