@@ -395,7 +395,7 @@ def obtener_open_interest_bybit():
         params = {
             "category": "linear",
             "symbol": "BTCUSDT",
-            "intervalTime": "5"
+            "intervalTime": "5min"
         }
         respuesta = requests.get(url, params=params, timeout=8)
         data = respuesta.json()
@@ -3736,7 +3736,7 @@ with tab_dashboard:
     st.divider()
     st.caption(
         "⚠️ **Aviso importante:** este dashboard combina datos de mercado (Binance, "
-        "Deribit) con cálculos e inferencias propias (Dealer Score, Flip Points, "
+        "Bybit, Deribit) con cálculos e inferencias propias (Dealer Score, Flip Points, "
         "Walls, niveles Imán, candidatos de absorción, lecturas de Scalp/Normal). "
         "Ninguna lectura, métrica o 'candidato' mostrado en esta página constituye "
         "una recomendación de inversión ni una señal de entrada o salida. Toda "
