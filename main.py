@@ -1268,25 +1268,28 @@ def vencimientos_disponibles_ordenados(instrumentos):
     return sorted(set(inst["vencimiento"] for inst in instrumentos))
 
 
-def vencimientos_semanales_ordenados(instrumentos, ahora, dias_max=21):
+def vencimientos_semanales_ordenados(instrumentos, ahora, dias_max=None):
     """
     Filtra los vencimientos a SOLO los que caen en viernes (los
-    semanales reales de Deribit) y están dentro de una ventana de
-    corto plazo (dias_max, default 21 días ~ 3 semanas).
+    semanales reales de Deribit).
 
     Por qué hace falta este filtro: Deribit mezcla en la misma lista
     de vencimientos los semanales (viernes), mensuales (último viernes
     del mes, que numéricamente también cae viernes) y trimestrales.
-    Sin filtrar por fecha, un trimestral lejano puede colarse en los
-    "próximos 5 vencimientos" y arrastrar el Flip/Walls a una distancia
-    de precio gigante, irrelevante para operativa de corto plazo
-    (intradiario/scalp). weekday()==4 es viernes en Python (lunes=0).
+    Sin filtrar por día de semana, un trimestral lejano (que no cae
+    viernes) podría colarse. weekday()==4 es viernes en Python
+    (lunes=0).
+
+    dias_max: si se especifica (no None), además acota a vencimientos
+    dentro de esa ventana de días desde "ahora". Si es None (default),
+    NO hay tope de días — se devuelven TODOS los viernes disponibles,
+    ordenados de más próximo a más lejano, y quien llama decide cuántos
+    usar (ver vencimientos_globales_5_reales para el criterio de
+    selección del Flip Global).
 
     Nota honesta: esto NO distingue un semanal de un mensual que
     coincide en viernes (Deribit no expone esa distinción en el nombre
-    del instrumento) — pero al acotar también por dias_max, en la
-    práctica filtra igual los mensuales/trimestrales lejanos, que es
-    lo que realmente importa para este caso.
+    del instrumento) — ambos quedan incluidos por igual si caen viernes.
     """
 
     todos = vencimientos_disponibles_ordenados(instrumentos)
@@ -1294,8 +1297,49 @@ def vencimientos_semanales_ordenados(instrumentos, ahora, dias_max=21):
     return [
         v for v in todos
         if v.weekday() == 4
-        and (v - ahora).total_seconds() / 86400.0 <= dias_max
+        and (dias_max is None or (v - ahora).total_seconds() / 86400.0 <= dias_max)
     ]
+
+
+def vencimientos_globales_5_reales(instrumentos, ahora):
+    """
+    Selecciona los vencimientos para el Flip Semanal (Global —
+    mediano/largo plazo): los próximos 5 vencimientos semanales reales
+    (viernes), SIN tope artificial de días — si el 5to viernes real
+    cae a 35 o 40 días, se incluye igual, porque lo que importa es
+    "5 vencimientos reales", no una ventana de calendario fija.
+
+    Además, se garantiza que TODOS los viernes del mes calendario en
+    curso (el mes de "ahora") que todavía no vencieron queden incluidos,
+    aunque eso empuje la lista a más de 5 elementos — pedido explícito:
+    el Global tiene que ver el mes completo en el que estamos parados,
+    no cortarlo a mitad de mes solo porque ya se juntaron 5 viernes de
+    otros meses.
+
+    Devuelve la lista ordenada de más próximo a más lejano.
+    """
+
+    semanales = vencimientos_semanales_ordenados(instrumentos, ahora, dias_max=None)
+
+    if not semanales:
+        return []
+
+    viernes_del_mes_actual = [
+        v for v in semanales
+        if v.year == ahora.year and v.month == ahora.month
+    ]
+
+    candidatos = semanales[:5]
+
+    # Si algún viernes del mes en curso quedó afuera de los primeros 5
+    # (mes con muchos viernes, o ya van varios vencidos y el resto cae
+    # tarde en la lista), lo agregamos igual y reordenamos.
+    faltantes_del_mes = [v for v in viernes_del_mes_actual if v not in candidatos]
+
+    if faltantes_del_mes:
+        candidatos = sorted(set(candidatos) | set(faltantes_del_mes))
+
+    return candidatos
 
 
 def filtrar_instrumentos_por_vencimientos(instrumentos, vencimientos_permitidos):
@@ -1303,6 +1347,104 @@ def filtrar_instrumentos_por_vencimientos(instrumentos, vencimientos_permitidos)
 
     permitidos = set(vencimientos_permitidos)
     return [inst for inst in instrumentos if inst["vencimiento"] in permitidos]
+
+
+def _score_carga_vencimiento(instrumentos, vencimiento, spot_actual, ahora):
+    """
+    Calcula la carga total (suma de OI x gamma, sin distinguir call/put)
+    de TODOS los instrumentos que vencen en una fecha puntual. Es el
+    mismo espíritu del score de Walls (OI x gamma, ponderado por qué tan
+    cerca está del spot en gamma), pero agregado a nivel "vencimiento
+    completo" en vez de por strike — sirve para decidir si ESE
+    vencimiento concentra suficiente peso como para entrar en el Flip
+    Local, no para encontrar un strike puntual.
+    """
+
+    carga = 0.0
+
+    for inst in instrumentos:
+        if inst["vencimiento"] != vencimiento:
+            continue
+
+        dias = (inst["vencimiento"] - ahora).total_seconds() / 86400.0
+        dias_seguro = max(dias, 0.01)
+
+        gamma = _gamma_black_scholes(
+            spot=spot_actual, strike=inst["strike"], vol_anual=inst["iv"],
+            dias_a_vencimiento=dias_seguro,
+        )
+
+        carga += inst["oi"] * gamma
+
+    return carga
+
+
+def vencimientos_locales_por_carga(instrumentos, vencimientos_candidatos, spot_actual, ahora, max_vencimientos=3, umbral_relativo=0.20):
+    """
+    Selecciona los vencimientos para el Flip Cercano (Local — corto
+    plazo) en base a dónde está realmente concentrada la carga (OI x
+    gamma), no por posición fija en la lista.
+
+    Criterio (pedido explícito): "si están cargados los próximos tres,
+    bien; si los más cargados son los próximos 2, bien" — es decir, no
+    hay un número fijo de vencimientos a usar, sino que se va sumando
+    mientras cada vencimiento adicional siga aportando una carga
+    relevante, con un techo de max_vencimientos (3) para que el Local
+    no termine pareciéndose al Global.
+
+    Algoritmo:
+      1. Se calcula el score de carga (OI x gamma) de cada uno de los
+         vencimientos_candidatos (ordenados de más próximo a más lejano,
+         normalmente vencimientos_global ya filtrado a semanales reales).
+      2. Se toma el de MAYOR carga como referencia (score_max).
+      3. Se van incluyendo vencimientos en orden de proximidad mientras
+         su carga sea al menos umbral_relativo (20%) de score_max — un
+         vencimiento casi vacío en comparación con el más cargado no
+         suma, sería ruido para el cálculo de corto plazo.
+      4. Tope duro de max_vencimientos (3), siempre se incluye al menos
+         el más próximo de todos (si hay candidatos).
+
+    Devuelve la lista de vencimientos seleccionados, ordenada de más
+    próximo a más lejano.
+    """
+
+    if not vencimientos_candidatos:
+        return []
+
+    candidatos_ordenados = sorted(vencimientos_candidatos)[:max(max_vencimientos, 1) + 2]
+    # +2 de margen: por si el vencimiento más cargado no es el primero
+    # de la lista, igual queremos poder evaluarlo dentro del universo
+    # candidato sin tener que mirar el listado entero de Deribit.
+
+    scores = {
+        v: _score_carga_vencimiento(instrumentos, v, spot_actual, ahora)
+        for v in candidatos_ordenados
+    }
+
+    score_max = max(scores.values(), default=0.0)
+
+    if score_max <= 0:
+        # Sin datos de carga útiles: al menos devolvemos el más próximo,
+        # para no dejar el Local sin ningún vencimiento.
+        return candidatos_ordenados[:1]
+
+    seleccionados = []
+
+    for v in sorted(candidatos_ordenados):  # de más próximo a más lejano
+        if len(seleccionados) >= max_vencimientos:
+            break
+        if not seleccionados:
+            seleccionados.append(v)  # el más próximo siempre entra
+            continue
+        if scores[v] >= score_max * umbral_relativo:
+            seleccionados.append(v)
+        else:
+            # Una vez que un vencimiento (en orden de proximidad) no
+            # llega al umbral, los siguientes son aún más lejanos y
+            # típicamente más chicos en carga reciente -> cortamos.
+            break
+
+    return seleccionados
 
 
 def calcular_rr_sugerido(precio_actual, nivel_valor, rol, siguiente_nivel=None):
@@ -1726,33 +1868,47 @@ with tab_dashboard:
         # intradiaria o de scalp. Ahora se filtra a SOLO vencimientos
         # semanales reales (viernes) dentro de una ventana corta de
         # DIAS_MAX_GLOBAL días. Ver vencimientos_semanales_ordenados.
-        DIAS_MAX_GLOBAL = 21  # ~3 semanas: suficiente para intradiario/swing corto, descarta mensual/trimestral lejano
-
+        # FIX (calibración): Deribit mezcla en la misma lista de vencimientos
+        # los semanales, mensuales y trimestrales. Tomar "los próximos 3-5
+        # vencimientos disponibles" sin filtrar podía colar un mensual/
+        # trimestral lejano que, por tener mucho OI acumulado de largo
+        # plazo, arrastraba el Flip Global y las Walls a distancias de
+        # precio gigantes (decenas de miles de USD) — inútil para operativa
+        # intradiaria o de scalp. Ahora se filtra a SOLO vencimientos
+        # semanales reales (viernes).
+        #
+        # GLOBAL (mediano/largo plazo): los próximos 5 vencimientos
+        # semanales reales, SIN tope artificial de días, garantizando
+        # además que se incluyan todos los viernes del MES EN CURSO
+        # aunque eso sume algún vencimiento extra por encima de 5. Ver
+        # vencimientos_globales_5_reales.
         vencimientos_semanales = vencimientos_semanales_ordenados(
-            instrumentos_deribit, ahora, dias_max=DIAS_MAX_GLOBAL
+            instrumentos_deribit, ahora, dias_max=None
         )
 
-        # Si por algún motivo no hay vencimientos que caigan justo viernes
-        # dentro de la ventana (caso raro, pero posible si Deribit no tiene
-        # nada listado todavía para la semana siguiente), caemos de vuelta
-        # a TODOS los vencimientos dentro de la ventana de días, sin filtrar
-        # por día de semana, para no dejar el dashboard sin Flip/Walls.
         if vencimientos_semanales:
-            vencimientos_global = vencimientos_semanales[:5]
+            vencimientos_global = vencimientos_globales_5_reales(instrumentos_deribit, ahora)
         else:
+            # Caso raro: Deribit no tiene NADA listado que caiga viernes
+            # (no debería pasar en condiciones normales). Caemos a los
+            # próximos vencimientos disponibles, sean viernes o no, para
+            # no dejar el dashboard sin Flip/Walls.
             todos_ordenados = vencimientos_disponibles_ordenados(instrumentos_deribit)
-            vencimientos_global = [
-                v for v in todos_ordenados
-                if (v - ahora).total_seconds() / 86400.0 <= DIAS_MAX_GLOBAL
-            ][:5] or todos_ordenados[:3]
+            vencimientos_global = todos_ordenados[:5] or todos_ordenados[:3]
 
         vencimiento_global_max = vencimientos_global[-1] if vencimientos_global else None
 
-        # Local: los DOS vencimientos más próximos DENTRO de la lista ya
-        # filtrada a semanales/corto plazo (típicamente el día más próximo
-        # + el siguiente), ponderando por tiempo para que el más cercano
-        # pese más que el segundo.
-        vencimientos_local = vencimientos_global[:2] if len(vencimientos_global) >= 2 else vencimientos_global
+        # LOCAL (corto plazo): ya no son "los primeros 2 de la lista" a
+        # ciegas. Se calcula la carga real (OI x gamma) de cada uno de
+        # los vencimientos candidatos del Global y se seleccionan los
+        # que de verdad concentran peso de corto plazo — como mínimo el
+        # más próximo, como máximo 3 (ver vencimientos_locales_por_carga).
+        # Esto es lo que corrige que antes Local terminara apuntando al
+        # mismo recorte que antes tenía Global invertido.
+        vencimientos_local = vencimientos_locales_por_carga(
+            instrumentos_deribit, vencimientos_global, precio_actual, ahora,
+            max_vencimientos=3,
+        )
         vencimiento_local_dt = vencimientos_local[-1] if vencimientos_local else None
 
         # RANGO DEL FLIP GLOBAL: antes ±15% (en BTC a 100k, ±$15.000 — muy
@@ -1825,6 +1981,92 @@ def _actualizar_y_calcular_cambio_oi(historial_lista, oi_actual, ventana=10, top
         historial_lista.pop(0)
 
     return cambio_pct
+
+
+def procesar_oi_fuente(clave_session, oi_nuevo, ventana=10, tope=20):
+    """
+    Procesa el Open Interest de UNA fuente puntual (Binance, Bybit,
+    etc.) de forma autocontenida: cachea el último valor válido (para
+    no parpadear a N/D en un refresh fallido), mantiene su PROPIO
+    historial en session_state (clave_session, distinto al de otras
+    fuentes -> evita que dos fuentes se pisen en el mismo historial,
+    que era la causa de la "doble barra" repetida con un solo cálculo
+    de cambio), y devuelve el cambio % vs ~ventana refreshes atrás.
+
+    clave_session: prefijo único para esta fuente, ej. "binance" o
+    "bybit". Se usan dos claves de session_state por fuente:
+    f"{clave_session}_ultimo_oi_valido" y f"{clave_session}_oi_historial".
+
+    Devuelve un dict con: disponible, valor, es_cache, cambio_pct,
+    historial_lista (la lista misma, por si se necesita inspeccionar).
+    """
+
+    clave_ultimo = f"{clave_session}_ultimo_oi_valido"
+    clave_historial = f"{clave_session}_oi_historial"
+
+    if clave_ultimo not in st.session_state:
+        st.session_state[clave_ultimo] = None
+    if clave_historial not in st.session_state:
+        st.session_state[clave_historial] = []
+
+    if oi_nuevo is not None:
+        st.session_state[clave_ultimo] = oi_nuevo
+        disponible = True
+        valor = oi_nuevo
+        es_cache = False
+    else:
+        disponible = st.session_state[clave_ultimo] is not None
+        valor = st.session_state[clave_ultimo] if disponible else 0.0
+        es_cache = True
+
+    cambio_pct = None
+
+    if disponible:
+        cambio_pct = _actualizar_y_calcular_cambio_oi(
+            st.session_state[clave_historial], valor, ventana=ventana, tope=tope
+        )
+
+    return {
+        "disponible": disponible,
+        "valor": valor,
+        "es_cache": es_cache,
+        "cambio_pct": cambio_pct,
+    }
+
+
+def render_metrica_oi(titulo, resultado_fuente, color_caption="#9aa0a6"):
+    """
+    Dibuja UNA métrica de Open Interest con su barra de cambio %,
+    reusando el resultado de procesar_oi_fuente. Esto es lo que evita
+    repetir el bloque de st.metric + st.caption + st.progress a mano
+    por cada fuente nueva que se agregue (Binance, Bybit, o la que
+    venga después) -- una sola función, una sola barra por fuente,
+    nunca una fuente pisando la barra de la otra.
+    """
+
+    if not resultado_fuente["disponible"]:
+        st.metric(titulo, "N/D")
+        return
+
+    etiqueta_cache = " ⏳" if resultado_fuente["es_cache"] else ""
+    st.metric(titulo, f"{resultado_fuente['valor']:,.0f}{etiqueta_cache}")
+
+    cambio = resultado_fuente["cambio_pct"]
+
+    if cambio is None:
+        st.caption("Sin historial suficiente todavía (≈2.5 min)")
+        st.progress(0.0)
+    else:
+        st.caption(f"Cambio (≈2.5 min): **{cambio:+.2f}%**")
+        # Barra escalada a un rango realista: 0.5% de cambio llena la
+        # barra por completo (mismo criterio que ya usaba el bloque
+        # original combinado, ahora aplicado por fuente).
+        st.progress(min(abs(cambio) / 0.5, 1.0))
+
+        if abs(cambio) > 0.35:
+            st.caption("📈 Creciendo fuerte" if cambio > 0 else "📉 Cayendo fuerte")
+        elif abs(cambio) > 0.12:
+            st.caption("📈 Subiendo" if cambio > 0 else "📉 Bajando")
 with tab_dashboard:
 
 
@@ -1907,12 +2149,12 @@ with tab_dashboard:
     with b2:
         st.session_state.capas_activas["MINI_FLIP"] = st.toggle(
             "🔁 MINI FLIP", value=st.session_state.capas_activas["MINI_FLIP"], key="cap_mini_flip",
-            help="Flip Cercano (Local): solo el vencimiento más próximo de Deribit. Pensado para Scalp."
+            help="Flip Cercano (Local): vencimientos de corto plazo seleccionados por carga real de OI/gamma (1 a 3, el más próximo siempre incluido). Pensado para Scalp."
         )
     with b3:
         st.session_state.capas_activas["FLIP_FULL"] = st.toggle(
             "🔁 FLIP FULL", value=st.session_state.capas_activas["FLIP_FULL"], key="cap_flip_full",
-            help="Flip Semanal (Global): agrega los próximos 3 a 5 vencimientos de Deribit. Pensado para Normal/intradiario."
+            help="Flip Semanal (Global): agrega los próximos 5 vencimientos semanales reales de Deribit (viernes), incluyendo todos los del mes en curso. Pensado para Normal/intradiario."
         )
     with b4:
         st.session_state.capas_activas["GAMMA_ZONE"] = st.toggle(
@@ -2253,9 +2495,19 @@ with tab_dashboard:
 
     funding = obtener_funding()
 
-    # Open Interest con fallback a Bybit
+    # Open Interest: se pide a las dos fuentes (Binance y Bybit). Cada
+    # una se procesa por separado con procesar_oi_fuente (su propio
+    # historial, su propio cambio %) para poder mostrarlas como dos
+    # métricas distinguidas en el panel Institucional, sin que una
+    # pise el historial de la otra. Además se mantiene "oi"/"fuente_oi"
+    # como el MEJOR disponible (Bybit primero, fallback a Binance) para
+    # no romper Dealer Score, Flow y Market Intelligence, que ya usaban
+    # esta variable combinada.
     oi_binance = obtener_open_interest()
     oi_bybit = obtener_open_interest_bybit()
+
+    resultado_oi_binance = procesar_oi_fuente("binance", oi_binance)
+    resultado_oi_bybit = procesar_oi_fuente("bybit", oi_bybit)
 
     if oi_bybit is not None and oi_bybit > 0:
         oi = oi_bybit
@@ -2456,106 +2708,57 @@ with tab_dashboard:
                 st.caption("⏳ Último dato conocido, este refresh no pudo actualizar.")
         else:
             st.metric("Funding", "N/D")
-                   # =============================================
-        # OPEN INTEREST MEJORADO (Binance + Bybit)
         # =============================================
+        # OPEN INTEREST — BINANCE Y BYBIT POR SEPARADO
+        # =============================================
+        # FIX (pedido del usuario: "me sale doble barra"): antes había
+        # UN solo historial compartido (oi_historial) al que se le hacía
+        # append() DOS VECES por refresh (una vez en el bloque de
+        # display, otra en el bloque de "cambio"), desincronizando las
+        # ventanas de comparación. Ahora cada fuente tiene su propio
+        # historial dedicado (vía procesar_oi_fuente/render_metrica_oi,
+        # con un único append por fuente por refresh) y se muestran
+        # como DOS métricas distinguidas, sin pisarse entre sí ni
+        # duplicar el cálculo.
 
-        if oi is not None:
-            etiqueta_fuente = f" ({fuente_oi})"
-            etiqueta_cache = " ⏳" if oi_es_cache else ""
-            st.metric("Open Interest", f"{oi:,.0f}{etiqueta_fuente}{etiqueta_cache}")
+        col_oi1, col_oi2 = st.columns(2)
 
-            # Cálculo de cambios
-            if "oi_historial" not in st.session_state:
-                st.session_state.oi_historial = []
+        with col_oi1:
+            render_metrica_oi("OI Binance", resultado_oi_binance)
 
-            cambio_15s = 0.0
-            cambio_5min = 0.0
+        with col_oi2:
+            render_metrica_oi("OI Bybit", resultado_oi_bybit)
 
-            if len(st.session_state.oi_historial) > 0:
-                oi_anterior = st.session_state.oi_historial[-1]
-                if oi_anterior > 0:
-                    cambio_15s = round(((oi - oi_anterior) / oi_anterior) * 100, 4)
+        # cambio_oi / oi_disponible / oi_valor: se mantienen como el
+        # MEJOR dato disponible (mismo criterio que "oi"/"fuente_oi" —
+        # Bybit primero, fallback a Binance), porque Dealer Score, Flow
+        # y Market Intelligence más abajo en el dashboard ya dependen de
+        # estos nombres. Usa su propio historial dedicado
+        # (st.session_state.oi_historial), con un único append por
+        # refresh — ya no comparte lista ni se duplica con las métricas
+        # individuales de Binance/Bybit de arriba.
 
-            if len(st.session_state.oi_historial) >= 20:
-                oi_5min = st.session_state.oi_historial[-20]
-                if oi_5min > 0:
-                    cambio_5min = round(((oi - oi_5min) / oi_5min) * 100, 3)
-
-            st.session_state.oi_historial.append(oi)
-            if len(st.session_state.oi_historial) > 60:
-                st.session_state.oi_historial.pop(0)
-
-            st.caption(f"Cambio OI → 15s: {cambio_15s}% | ~5min: **{cambio_5min}%**")
-
-            if abs(cambio_5min) > 0.35:
-                st.success("📈 OI creciendo fuerte" if cambio_5min > 0 else "📉 OI cayendo fuerte")
-            elif abs(cambio_5min) > 0.12:
-                st.warning("📈 OI subiendo" if cambio_5min > 0 else "📉 OI bajando")
-            else:
-                st.info("⚖️ OI estable")
-        else:
-            st.metric("Open Interest", "N/D")
-          
-        # CAMBIO OPEN INTEREST
-        # FIX (calibración): el OI de Binance Futures en BTCUSDT se mueve
-        # muy poco en 15s (típicamente 0.01%-0.05%), muy por debajo del
-        # umbral de 0.5% que se usaba antes -> la barra quedaba siempre en
-        # "estable" porque el umbral estaba pensado para otra cadencia.
-        #
-        # Ahora se calculan DOS cambios:
-        # - cambio_oi_inmediato: vs el refresh anterior (~15s) — sigue
-        #   existiendo porque lo usa Flow para la lectura de microestructura.
-        # - cambio_oi_ventana: vs el valor de ~10 refreshes atrás (~2.5 min)
-        #   — esto SÍ acumula suficiente movimiento como para que la barra
-        #   tenga rango dinámico real, en vez de oscilar entre 0 y 0.02%.
-        #
-        # El umbral de clasificación también se ajustó a un valor realista
-        # para el dato acumulado (0.15% en vez de 0.5%).
-
-        cambio_oi_inmediato = 0.0
-        cambio_oi_ventana = 0.0
+        cambio_oi = None
 
         if oi_disponible:
+            cambio_oi = _actualizar_y_calcular_cambio_oi(
+                st.session_state.oi_historial, oi_valor
+            )
 
-            if len(st.session_state.oi_historial) > 0:
-                oi_anterior = st.session_state.oi_historial[-1]
-                if oi_anterior > 0:
-                    cambio_oi_inmediato = round(((oi_valor - oi_anterior) / oi_anterior) * 100, 4)
+        cambio_oi = cambio_oi if cambio_oi is not None else 0.0
 
-            if len(st.session_state.oi_historial) >= 10:
-                oi_base_ventana = st.session_state.oi_historial[-10]
-                if oi_base_ventana > 0:
-                    cambio_oi_ventana = round(((oi_valor - oi_base_ventana) / oi_base_ventana) * 100, 2)
-            elif len(st.session_state.oi_historial) > 0:
-                # todavía no hay 10 puntos: usamos el más viejo disponible
-                oi_base_ventana = st.session_state.oi_historial[0]
-                if oi_base_ventana > 0:
-                    cambio_oi_ventana = round(((oi_valor - oi_base_ventana) / oi_base_ventana) * 100, 2)
+        st.caption(f"OI combinado (mejor fuente: {fuente_oi}) — cambio ≈2.5 min: **{cambio_oi:+.2f}%**")
 
-            st.session_state.oi_historial.append(oi_valor)
+        UMBRAL_OI = 0.15  # calibrado al movimiento real acumulado de BTC en ~2.5 min
 
-            if len(st.session_state.oi_historial) > 20:
-                st.session_state.oi_historial.pop(0)
-
-        # cambio_oi se mantiene como nombre usado por Flow/lectura más abajo,
-        # pero ahora apunta al cambio de ventana (~2.5 min), más representativo
-        cambio_oi = cambio_oi_ventana
-
-        st.caption(f"Cambio OI (≈2.5 min): {cambio_oi_ventana}% · último refresh: {cambio_oi_inmediato}%")
-
-        UMBRAL_OI = 0.15  # antes 0.5, demasiado alto para el movimiento real acumulado
-
-        if cambio_oi_ventana > UMBRAL_OI:
+        if cambio_oi > UMBRAL_OI:
             st.success("📈 Participación entrando")
-        elif cambio_oi_ventana < -UMBRAL_OI:
+        elif cambio_oi < -UMBRAL_OI:
             st.warning("📉 Participación saliendo")
         else:
             st.info("⚖️ OI estable")
 
-        # Barra escalada a un rango más realista (antes dividía por 1 = 100%,
-        # necesitabas un cambio de 1% para llenar la barra; ahora por 0.5%)
-        st.progress(min(abs(cambio_oi_ventana) / 0.5, 1.0))
+        st.progress(min(abs(cambio_oi) / 0.5, 1.0))
 
     # -----------------------------
     # PRESIÓN
@@ -3167,17 +3370,21 @@ with tab_opciones:
             st.subheader(
                 "🔁 Flip Cercano (Local — Corto Plazo)",
                 help=(
-                    "Lo mismo que el Flip Semanal, pero calculado solo con el "
-                    "vencimiento de opciones más próximo en el calendario. Reacciona "
-                    "más rápido a cambios de posicionamiento de corto plazo — más "
-                    "relevante para operativa intradiaria o de Scalp que el Flip Semanal."
+                    "Lo mismo que el Flip Semanal, pero calculado solo con los "
+                    "vencimientos de opciones de corto plazo que concentran carga real "
+                    "(OI x gamma) — entre 1 y 3, el más próximo siempre incluido. "
+                    "Reacciona más rápido a cambios de posicionamiento de corto plazo — "
+                    "más relevante para operativa intradiaria o de Scalp que el Flip Semanal."
                 ),
             )
 
             if resultado_flip_local:
                 gex_spot_local = resultado_flip_local["gex_spot"]
                 contexto_local = "🟢 Long Gamma" if gex_spot_local > 0 else "🔴 Short Gamma"
-                venc_txt = vencimiento_local_dt.strftime("%d-%b-%Y") if vencimiento_local_dt else "N/D"
+                venc_lista_txt = (
+                    ", ".join(v.strftime("%d-%b") for v in vencimientos_local)
+                    if vencimientos_local else "N/D"
+                )
 
                 if resultado_flip_local["flip_point"]:
                     fp_local = resultado_flip_local["flip_point"]
@@ -3191,7 +3398,7 @@ with tab_opciones:
                     f"""
     {flip_txt}
     **Régimen actual:** {contexto_local}
-    **Vencimientos usados:** hasta {venc_txt}
+    **Vencimientos usados ({len(vencimientos_local)}):** {venc_lista_txt}
     """
                 )
             else:
