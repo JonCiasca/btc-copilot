@@ -395,17 +395,22 @@ def obtener_open_interest_bybit():
         params = {
             "category": "linear",
             "symbol": "BTCUSDT",
-            "intervalTime": "1min"
+            "intervalTime": "5min"
         }
-        respuesta = requests.get(url, params=params, timeout=8)
+        respuesta = requests.get(url, params=params, timeout=10)
         data = respuesta.json()
-
+        
         if data.get("retCode") == 0 and data.get("result", {}).get("list"):
             oi = float(data["result"]["list"][0]["openInterest"])
             return oi
+        else:
+            # Mostrar error para debug
+            st.session_state["bybit_error"] = f"Bybit retCode: {data.get('retCode')} - Msg: {data.get('retMsg')}"
+            return None
+    except Exception as e:
+        st.session_state["bybit_error"] = str(e)
         return None
-    except Exception:
-        return None
+
         
 with tab_dashboard:
 
