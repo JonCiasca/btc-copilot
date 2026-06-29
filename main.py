@@ -2423,14 +2423,46 @@ with tab_dashboard:
                 st.caption("⏳ Último dato conocido, este refresh no pudo actualizar.")
         else:
             st.metric("Funding", "N/D")
+            # =============================================
+        # OPEN INTEREST MEJORADO (más sensible)
+        # =============================================
 
-        if oi_disponible:
+        if oi is not None:
             etiqueta_cache_oi = " ⏳" if oi_es_cache else ""
-            st.metric("Open Interest", f"{oi_valor:,.0f}{etiqueta_cache_oi}")
-            if oi_es_cache:
-                st.caption("⏳ Último dato conocido, este refresh no pudo actualizar.")
+            st.metric("Open Interest", f"{oi:,.0f}{etiqueta_cache_oi}")
+
+            # Mejora: calculamos cambio en diferentes ventanas
+            if "oi_historial" not in st.session_state:
+                st.session_state.oi_historial = []
+
+            cambio_15s = 0.0
+            cambio_5min = 0.0
+
+            if len(st.session_state.oi_historial) > 0:
+                oi_anterior = st.session_state.oi_historial[-1]
+                if oi_anterior > 0:
+                    cambio_15s = round(((oi - oi_anterior) / oi_anterior) * 100, 4)
+
+            if len(st.session_state.oi_historial) >= 20:   # ~5 minutos
+                oi_5min = st.session_state.oi_historial[-20]
+                if oi_5min > 0:
+                    cambio_5min = round(((oi - oi_5min) / oi_5min) * 100, 3)
+
+            st.session_state.oi_historial.append(oi)
+            if len(st.session_state.oi_historial) > 60:
+                st.session_state.oi_historial.pop(0)
+
+            st.caption(f"Cambio OI → Último refresh: {cambio_15s}% | Últimos ~5 min: **{cambio_5min}%**")
+
+            if abs(cambio_5min) > 0.30:
+                st.success("📈 OI creciendo fuerte" if cambio_5min > 0 else "📉 OI cayendo fuerte")
+            elif abs(cambio_5min) > 0.10:
+                st.warning("📈 OI subiendo" if cambio_5min > 0 else "📉 OI bajando")
+            else:
+                st.info("⚖️ OI estable")
         else:
             st.metric("Open Interest", "N/D")
+          
         # CAMBIO OPEN INTEREST
         # FIX (calibración): el OI de Binance Futures en BTCUSDT se mueve
         # muy poco en 15s (típicamente 0.01%-0.05%), muy por debajo del
