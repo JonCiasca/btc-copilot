@@ -389,29 +389,21 @@ def obtener_open_interest():
         return None
     
 def obtener_open_interest_bybit():
-    """Obtiene Open Interest de Bybit (suele ser más reactivo)."""
+    """
+    Obtiene Open Interest de Bybit (suele ser más reactivo) a través
+    de nuestro proxy en Render (ver obtener_ticker) — Bybit bloquea
+    geográficamente vía CloudFront el acceso directo desde Streamlit
+    Cloud (mismo problema que ya tenemos con Binance), así que esto
+    NO se puede pedir directo, tiene que pasar por el proxy.
+    """
     try:
-        url = "https://api.bybit.com/v5/market/open-interest"
-        params = {
-            "category": "linear",
-            "symbol": "BTCUSDT",
-            "intervalTime": "5min"
-        }
-        respuesta = requests.get(url, params=params, timeout=10)
-
-        # FIX: antes se asumía que la respuesta SIEMPRE era JSON válido.
-        # Si Bybit bloquea la IP de Streamlit Cloud (mismo problema que
-        # ya tenés documentado con Binance) o devuelve un error de
-        # Cloudflare, la respuesta es HTML, no JSON -> .json() explota
-        # con "Expecting property name enclosed in double quotes", que
-        # es justo el error que estás viendo. Ahora chequeamos el status
-        # y el content-type ANTES de parsear, para dar un mensaje claro.
+        url = f"{PROXY_URL}/bybit/openInterest?symbol=BTCUSDT&intervalTime=5min"
+        respuesta = requests.get(url, timeout=10)
 
         if respuesta.status_code != 200:
             st.session_state["bybit_error"] = (
-                f"HTTP {respuesta.status_code} — Bybit puede estar "
-                f"bloqueando la IP de Streamlit Cloud (mismo problema que "
-                f"tenemos con Binance). Respuesta cruda: {respuesta.text[:200]}"
+                f"HTTP {respuesta.status_code} desde el proxy. "
+                f"Respuesta cruda: {respuesta.text[:200]}"
             )
             return None
 
@@ -419,8 +411,7 @@ def obtener_open_interest_bybit():
             data = respuesta.json()
         except ValueError:
             st.session_state["bybit_error"] = (
-                f"Bybit no devolvió JSON (probable bloqueo de IP o "
-                f"challenge anti-bot). Respuesta cruda: {respuesta.text[:200]}"
+                f"El proxy no devolvió JSON. Respuesta cruda: {respuesta.text[:200]}"
             )
             return None
 
