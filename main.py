@@ -517,6 +517,98 @@ def _norm_cdf(x):
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2)))
 
 
+def _norm_cdf_vectorizado(x):
+    """
+    CDF normal estándar vectorizada con NumPy, para arrays completos en
+    vez de un valor a la vez. NumPy no trae erf (eso es scipy.special),
+    así que se usa la aproximación racional de Abramowitz & Stegun
+    (7.1.26) — error máximo ~1.5e-7, sobra de precisión para Greeks de
+    trading y evita sumar scipy como dependencia nueva solo para esto.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    signo = np.sign(x)
+    x_abs = np.abs(x) / np.sqrt(2.0)
+
+    a1, a2, a3, a4, a5 = 0.254829592, -0.284496736, 1.421413741, -1.453152027, 1.061405429
+    p = 0.3275911
+
+    t = 1.0 / (1.0 + p * x_abs)
+    poly = ((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t
+    erf_aprox = 1.0 - poly * np.exp(-x_abs ** 2)
+
+    return 0.5 * (1.0 + signo * erf_aprox)
+
+
+def _vectores_black_scholes(spot, strikes, vols, dias, signos_tipo, tasa=0.0):
+    """
+    Versión vectorizada de gamma/delta/vega/theta: calcula los 4 Greeks
+    para TODOS los strikes de un lado (call o put) en una sola pasada de
+    NumPy, en vez de 4 llamadas a _gamma/_delta/_vega/_theta_black_scholes
+    POR CADA strike (que es lo que hacía _calcular_score_strikes antes,
+    en un loop de Python). Mismas fórmulas que las versiones escalares
+    (_gamma_black_scholes, etc.) — esto es solo la versión que opera
+    sobre arrays.
+
+    spot: escalar (precio actual, no una grilla — para eso ya existe
+    _gamma_black_scholes_vectorizada en el módulo de GEX).
+    strikes, vols, dias, signos_tipo: arrays 1D, mismo largo (uno por
+    strike). signos_tipo: +1.0 para call, -1.0 para put — define el
+    signo de delta y theta (gamma y vega son iguales para ambos lados).
+
+    Devuelve (gamma, delta, vega, theta), cada uno un array del mismo
+    largo. Entradas inválidas (días<=0, vol<=0, strike<=0) devuelven 0
+    en las 4 — no debería llegar acá ninguna así (se filtran antes),
+    pero es la misma cautela que ya tenían las versiones escalares.
+    """
+
+    strikes = np.asarray(strikes, dtype=np.float64)
+    vols = np.asarray(vols, dtype=np.float64)
+    dias = np.asarray(dias, dtype=np.float64)
+    signos_tipo = np.asarray(signos_tipo, dtype=np.float64)
+
+    gamma = np.zeros_like(strikes)
+    delta = np.zeros_like(strikes)
+    vega = np.zeros_like(strikes)
+    theta = np.zeros_like(strikes)
+
+    validos = (dias > 0) & (vols > 0) & (strikes > 0) & (spot > 0)
+    if not np.any(validos):
+        return gamma, delta, vega, theta
+
+    s_v = strikes[validos]
+    v_v = vols[validos]
+    d_v = dias[validos]
+    signo_v = signos_tipo[validos]
+
+    t = d_v / 365.0
+    sqrt_t = np.sqrt(t)
+
+    d1 = (np.log(spot / s_v) + (tasa + 0.5 * v_v ** 2) * t) / (v_v * sqrt_t)
+    d2 = d1 - v_v * sqrt_t
+
+    norm_pdf_d1 = np.exp(-0.5 * d1 ** 2) / np.sqrt(2 * np.pi)
+    cdf_d1 = _norm_cdf_vectorizado(d1)
+    cdf_d2 = _norm_cdf_vectorizado(d2)
+    cdf_neg_d2 = _norm_cdf_vectorizado(-d2)
+
+    gamma_v = norm_pdf_d1 / (spot * v_v * sqrt_t)
+    # delta: call = N(d1), put = N(d1) - 1
+    delta_v = np.where(signo_v > 0, cdf_d1, cdf_d1 - 1.0)
+    vega_v = (spot * norm_pdf_d1 * sqrt_t) / 100.0
+
+    termino_comun = -(spot * norm_pdf_d1 * v_v) / (2 * sqrt_t)
+    theta_call = termino_comun - tasa * s_v * cdf_d2
+    theta_put = termino_comun + tasa * s_v * cdf_neg_d2
+    theta_v = np.where(signo_v > 0, theta_call, theta_put) / 365.0
+
+    gamma[validos] = gamma_v
+    delta[validos] = delta_v
+    vega[validos] = vega_v
+    theta[validos] = theta_v
+
+    return gamma, delta, vega, theta
+
+
 def _delta_black_scholes(spot, strike, vol_anual, dias_a_vencimiento, tipo, tasa=0.0):
     """
     Delta de Black-Scholes: sensibilidad del precio de la opción ante
@@ -983,15 +1075,16 @@ def _calcular_score_strikes(instrumentos, tipo, spot_actual, ahora):
     que antes: la wall suele estar dominada por el vencimiento más
     cercano/líquido).
 
-    AMPLIACIÓN (Delta/Vega/Theta + lectura de decaimiento): además del
-    score y la gamma del tipo pedido (`tipo`), cada strike devuelve
-    también los Greeks del LADO OPUESTO, calculados sobre el mismo
-    instrumento de referencia (vencimiento más próximo en ese strike,
-    misma IV). Esto es lo que permite que la tabla muestre, para un
-    mismo strike, tanto la lectura call como la lectura put sin tener
-    que recorrer la lista de instrumentos dos veces. El campo
-    "lectura_decaimiento" es texto descriptivo (ver _lectura_decaimiento),
-    no una predicción de movimiento de precio.
+    VECTORIZADO: la parte cara (Gamma/Delta/Vega/Theta de cada strike,
+    para el tipo pedido y para el lado opuesto) se calcula con
+    _vectores_black_scholes sobre arrays de NumPy, en una sola pasada
+    para TODOS los strikes del lado — antes era un loop de Python que
+    llamaba 4 funciones escalares (_gamma/_delta/_vega/_theta_black_scholes)
+    por cada strike, dos veces (lado pedido + lado opuesto). El
+    agrupamiento por strike (sumar OI, elegir el instrumento de
+    vencimiento más próximo como referencia) sigue siendo un paso
+    liviano en Python puro, porque no es matemática repetida — es
+    organización de datos.
 
     Devuelve dict {strike: {...}} con, por strike:
       score, oi, gamma, distancia_pct (del tipo pedido),
@@ -1010,8 +1103,10 @@ def _calcular_score_strikes(instrumentos, tipo, spot_actual, ahora):
         if dias <= 0:
             continue
 
-        strike = inst["strike"]
-        por_strike.setdefault(strike, []).append(inst)
+        por_strike.setdefault(inst["strike"], []).append(inst)
+
+    if not por_strike:
+        return {}
 
     # Índice auxiliar del lado opuesto, por (strike, vencimiento), para
     # poder calcular sus Greeks sobre el MISMO vencimiento de referencia
@@ -1021,95 +1116,79 @@ def _calcular_score_strikes(instrumentos, tipo, spot_actual, ahora):
     for inst in instrumentos:
         if inst["tipo"] != tipo_opuesto:
             continue
-        clave = (inst["strike"], inst["vencimiento"])
-        iv_lado_opuesto[clave] = inst["iv"]
+        iv_lado_opuesto[(inst["strike"], inst["vencimiento"])] = inst["iv"]
 
-    resultados = {}
+    # Paso 1 (Python puro, liviano): por cada strike, agregar OI total y
+    # elegir el instrumento de referencia (vencimiento más próximo).
+    strikes_list, oi_list, dias_list, iv_ref_list, iv_opuesta_list = [], [], [], [], []
 
     for strike, candidatos in por_strike.items():
 
         oi_total = sum(c["oi"] for c in candidatos)
 
-        # Vencimiento más próximo disponible en este strike, como
-        # referencia para la gamma (mismo criterio que la versión anterior).
         candidatos.sort(key=lambda c: c["vencimiento"])
         inst_referencia = candidatos[0]
 
         dias_ref = (inst_referencia["vencimiento"] - ahora).total_seconds() / 86400.0
         dias_ref_seguro = max(dias_ref, 0.01)
-        iv_ref = inst_referencia["iv"]
-
-        gamma_strike = _gamma_black_scholes(
-            spot=spot_actual,
-            strike=strike,
-            vol_anual=iv_ref,
-            dias_a_vencimiento=dias_ref_seguro,
-        )
-
-        delta_strike = _delta_black_scholes(
-            spot=spot_actual, strike=strike, vol_anual=iv_ref,
-            dias_a_vencimiento=dias_ref_seguro, tipo=tipo,
-        )
-        vega_strike = _vega_black_scholes(
-            spot=spot_actual, strike=strike, vol_anual=iv_ref,
-            dias_a_vencimiento=dias_ref_seguro,
-        )
-        theta_strike = _theta_black_scholes(
-            spot=spot_actual, strike=strike, vol_anual=iv_ref,
-            dias_a_vencimiento=dias_ref_seguro, tipo=tipo,
-        )
 
         # Lado opuesto: mismo strike, mismo vencimiento de referencia.
-        # Si no existe ese instrumento en Deribit (puede pasar, no
-        # todos los strikes tienen ambos lados listados), usamos la
-        # misma IV de referencia como aproximación razonable -- el
-        # objetivo es mostrar la lectura comparativa, no un dato exacto
-        # de un contrato que no existe.
+        # Si no existe ese instrumento en Deribit, usamos la misma IV
+        # de referencia como aproximación razonable -- el objetivo es
+        # mostrar la lectura comparativa, no un dato exacto de un
+        # contrato que no existe.
         clave_opuesta = (strike, inst_referencia["vencimiento"])
-        iv_opuesta = iv_lado_opuesto.get(clave_opuesta, iv_ref)
+        iv_opuesta = iv_lado_opuesto.get(clave_opuesta, inst_referencia["iv"])
 
-        gamma_otro_lado = _gamma_black_scholes(
-            spot=spot_actual, strike=strike, vol_anual=iv_opuesta,
-            dias_a_vencimiento=dias_ref_seguro,
-        )
-        delta_otro_lado = _delta_black_scholes(
-            spot=spot_actual, strike=strike, vol_anual=iv_opuesta,
-            dias_a_vencimiento=dias_ref_seguro, tipo=tipo_opuesto,
-        )
-        vega_otro_lado = _vega_black_scholes(
-            spot=spot_actual, strike=strike, vol_anual=iv_opuesta,
-            dias_a_vencimiento=dias_ref_seguro,
-        )
-        theta_otro_lado = _theta_black_scholes(
-            spot=spot_actual, strike=strike, vol_anual=iv_opuesta,
-            dias_a_vencimiento=dias_ref_seguro, tipo=tipo_opuesto,
-        )
+        strikes_list.append(strike)
+        oi_list.append(oi_total)
+        dias_list.append(dias_ref_seguro)
+        iv_ref_list.append(inst_referencia["iv"])
+        iv_opuesta_list.append(iv_opuesta)
 
-        peso_tiempo = 1.0 / math.sqrt(max(dias_ref, 0.5))
+    # Paso 2 (vectorizado con NumPy): Gamma/Delta/Vega/Theta de TODOS
+    # los strikes del lado pedido y del lado opuesto, de una sola vez.
+    strikes_arr = np.array(strikes_list, dtype=np.float64)
+    oi_arr = np.array(oi_list, dtype=np.float64)
+    dias_arr = np.array(dias_list, dtype=np.float64)
+    iv_ref_arr = np.array(iv_ref_list, dtype=np.float64)
+    iv_opuesta_arr = np.array(iv_opuesta_list, dtype=np.float64)
 
-        distancia_pct = abs((strike - spot_actual) / spot_actual) * 100
-        # Decaimiento exponencial: a 0% de distancia, peso 1.0; a
-        # ~7% de distancia, peso ya cayó a ~0.05 (prácticamente
-        # descartado). Ajustado para que la wall relevante quede en un
-        # rango operable de intradiario/scalp, no a decenas de miles
-        # de USD de distancia.
-        peso_distancia = math.exp(-distancia_pct / 2.5)
+    n = len(strikes_arr)
+    signo_tipo = np.full(n, 1.0 if tipo == "call" else -1.0)
+    signo_opuesto = np.full(n, -1.0 if tipo == "call" else 1.0)
 
-        score = oi_total * gamma_strike * peso_tiempo * peso_distancia
+    gamma, delta, vega, theta = _vectores_black_scholes(
+        spot_actual, strikes_arr, iv_ref_arr, dias_arr, signo_tipo
+    )
+    gamma_otro, delta_otro, vega_otro, theta_otro = _vectores_black_scholes(
+        spot_actual, strikes_arr, iv_opuesta_arr, dias_arr, signo_opuesto
+    )
 
-        resultados[strike] = {
-            "score": score,
-            "oi": oi_total,
-            "gamma": gamma_strike,
-            "distancia_pct": (strike - spot_actual) / spot_actual * 100,
-            "delta": delta_strike,
-            "vega": vega_strike,
-            "theta": theta_strike,
-            "gamma_otro_lado": gamma_otro_lado,
-            "delta_otro_lado": delta_otro_lado,
-            "vega_otro_lado": vega_otro_lado,
-            "theta_otro_lado": theta_otro_lado,
-            "dias_a_vencimiento": dias_ref,
+    peso_tiempo = 1.0 / np.sqrt(np.maximum(dias_arr, 0.5))
+    distancia_pct_signed = (strikes_arr - spot_actual) / spot_actual * 100
+    peso_distancia = np.exp(-np.abs(distancia_pct_signed) / 2.5)
+
+    score = oi_arr * gamma * peso_tiempo * peso_distancia
+
+    # Paso 3 (Python puro, liviano): volcar los arrays a el dict de
+    # salida — misma estructura que antes, para no tocar a quien
+    # consume esta función (encontrar_wall, calcular_tabla_strikes).
+    resultados = {}
+    for i in range(n):
+        resultados[float(strikes_arr[i])] = {
+            "score": float(score[i]),
+            "oi": float(oi_arr[i]),
+            "gamma": float(gamma[i]),
+            "distancia_pct": float(distancia_pct_signed[i]),
+            "delta": float(delta[i]),
+            "vega": float(vega[i]),
+            "theta": float(theta[i]),
+            "gamma_otro_lado": float(gamma_otro[i]),
+            "delta_otro_lado": float(delta_otro[i]),
+            "vega_otro_lado": float(vega_otro[i]),
+            "theta_otro_lado": float(theta_otro[i]),
+            "dias_a_vencimiento": float(dias_arr[i]),
         }
 
     # Segundo paso: recién acá conocemos el score máximo del lado
@@ -1162,19 +1241,32 @@ def encontrar_wall(instrumentos, tipo, spot_actual, ahora, vencimientos_permitid
     }
 
 
-def calcular_flip(instrumentos, spot_actual, vencimiento_max=None, rango_pct=0.15, pasos=61, ponderar_por_tiempo=False):
+def calcular_flip(instrumentos, spot_actual, vencimiento_max=None, vencimientos_permitidos=None, rango_pct=0.15, pasos=61, ponderar_por_tiempo=False):
     """
-    Calcula el flip point (cruce de signo del GEX) usando solo los
-    instrumentos con vencimiento <= vencimiento_max (si se especifica).
-    Si vencimiento_max es None, usa TODOS los instrumentos disponibles
-    (esto es lo que diferencia Flip Global de Flip Local).
+    Calcula el flip point (cruce de signo del GEX).
+
+    Dos formas de filtrar los instrumentos a usar (mutuamente
+    excluyentes — si se pasan los dos, vencimientos_permitidos gana):
+
+    - vencimientos_permitidos: set/lista exacta de vencimientos
+      (datetime) a incluir. Esto es lo que hace falta cuando Local y
+      Global NO deben solaparse — un corte "<= fecha máxima" siempre
+      arrastra todo lo anterior (incluidos los vencimientos cercanos
+      que ya usa Local), un set exacto no.
+    - vencimiento_max: corte "<= esta fecha" (comportamiento histórico,
+      se mantiene por compatibilidad con otros llamadores que sí
+      quieren todo lo anterior a una fecha).
+
+    Si ninguno se especifica, usa TODOS los instrumentos disponibles.
 
     ponderar_por_tiempo: ver docstring de calcular_gamma_exposure.
     Se usa True para el Flip Global (mezcla varios vencimientos) y
     False para el Flip Local (un solo vencimiento, no hace falta).
     """
 
-    if vencimiento_max is not None:
+    if vencimientos_permitidos is not None:
+        filtrados = filtrar_instrumentos_por_vencimientos(instrumentos, vencimientos_permitidos)
+    elif vencimiento_max is not None:
         filtrados = [i for i in instrumentos if i["vencimiento"] <= vencimiento_max]
     else:
         filtrados = instrumentos
@@ -1320,7 +1412,7 @@ def vencimientos_semanales_ordenados(instrumentos, ahora, dias_max=None):
     ]
 
 
-def vencimientos_globales_5_reales(instrumentos, ahora):
+def vencimientos_globales_5_reales(instrumentos, ahora, excluir=None):
     """
     Selecciona los vencimientos para el Flip Semanal (Global —
     mediano/largo plazo): los próximos 5 vencimientos semanales reales
@@ -1335,10 +1427,22 @@ def vencimientos_globales_5_reales(instrumentos, ahora):
     no cortarlo a mitad de mes solo porque ya se juntaron 5 viernes de
     otros meses.
 
+    excluir: set/lista opcional de vencimientos (datetime) a IGNORAR
+    antes de armar la selección — pensado para excluir los vencimientos
+    que ya tomó el Flip Local, así Global (mediano/largo plazo) y Local
+    (corto plazo/scalp) nunca comparten el mismo vencimiento. Si la
+    exclusión deja la lista vacía, el llamador debe manejar el fallback
+    (ver uso en el bloque principal del dashboard).
+
     Devuelve la lista ordenada de más próximo a más lejano.
     """
 
-    semanales = vencimientos_semanales_ordenados(instrumentos, ahora, dias_max=None)
+    excluir = set(excluir) if excluir else set()
+
+    semanales = [
+        v for v in vencimientos_semanales_ordenados(instrumentos, ahora, dias_max=None)
+        if v not in excluir
+    ]
 
     if not semanales:
         return []
@@ -1901,34 +2005,56 @@ with tab_dashboard:
         # además que se incluyan todos los viernes del MES EN CURSO
         # aunque eso sume algún vencimiento extra por encima de 5. Ver
         # vencimientos_globales_5_reales.
+        # FIX (pedido del usuario): Local y Global NO deben compartir
+        # vencimientos. Antes, aunque las LISTAS de candidatos no se
+        # solaparan, calcular_flip filtraba con "<= fecha máxima", que
+        # de todas formas arrastraba los vencimientos cercanos (los de
+        # Local) hacia adentro del cálculo de Global. Ahora:
+        #   1) Local se calcula PRIMERO, sobre el universo completo de
+        #      viernes reales (no sobre un subconjunto ya recortado a 5).
+        #   2) Global se calcula EXCLUYENDO esos vencimientos exactos —
+        #      ver vencimientos_globales_5_reales(excluir=...).
+        #   3) calcular_flip ahora filtra por SET exacto
+        #      (vencimientos_permitidos), no por corte de fecha, así el
+        #      no-solapamiento es real y no solo a nivel de "qué lista
+        #      arman", sino de qué instrumentos entran al GEX de cada uno.
+        #
+        # Walls y el heatmap de strikes, en cambio, SÍ deben seguir
+        # viendo todo el universo relevante (cercano + mediano plazo)
+        # como antes — para eso usan vencimientos_relevantes (la unión),
+        # no vencimientos_global solo.
         vencimientos_semanales = vencimientos_semanales_ordenados(
             instrumentos_deribit, ahora, dias_max=None
         )
 
         if vencimientos_semanales:
-            vencimientos_global = vencimientos_globales_5_reales(instrumentos_deribit, ahora)
+            vencimientos_local = vencimientos_locales_por_carga(
+                instrumentos_deribit, vencimientos_semanales, precio_actual, ahora,
+                max_vencimientos=3,
+            )
+            vencimientos_global = vencimientos_globales_5_reales(
+                instrumentos_deribit, ahora, excluir=set(vencimientos_local)
+            )
+            if not vencimientos_global:
+                # Caso límite: muy pocos viernes listados en Deribit y
+                # Local ya se los llevó todos. Mejor mostrar el mismo
+                # dato en ambos paneles que dejar Global vacío.
+                vencimientos_global = vencimientos_local
         else:
-            # Caso raro: Deribit no tiene NADA listado que caiga viernes
-            # (no debería pasar en condiciones normales). Caemos a los
-            # próximos vencimientos disponibles, sean viernes o no, para
-            # no dejar el dashboard sin Flip/Walls.
+            # Caso raro: Deribit no tiene NADA listado que caiga viernes.
+            # Caemos a los próximos vencimientos disponibles, sean
+            # viernes o no, para no dejar el dashboard sin Flip/Walls.
             todos_ordenados = vencimientos_disponibles_ordenados(instrumentos_deribit)
-            vencimientos_global = todos_ordenados[:5] or todos_ordenados[:3]
+            vencimientos_local = todos_ordenados[:1]
+            vencimientos_global = todos_ordenados[1:6] or todos_ordenados[:3] or todos_ordenados
 
+        vencimiento_local_dt = vencimientos_local[-1] if vencimientos_local else None
         vencimiento_global_max = vencimientos_global[-1] if vencimientos_global else None
 
-        # LOCAL (corto plazo): ya no son "los primeros 2 de la lista" a
-        # ciegas. Se calcula la carga real (OI x gamma) de cada uno de
-        # los vencimientos candidatos del Global y se seleccionan los
-        # que de verdad concentran peso de corto plazo — como mínimo el
-        # más próximo, como máximo 3 (ver vencimientos_locales_por_carga).
-        # Esto es lo que corrige que antes Local terminara apuntando al
-        # mismo recorte que antes tenía Global invertido.
-        vencimientos_local = vencimientos_locales_por_carga(
-            instrumentos_deribit, vencimientos_global, precio_actual, ahora,
-            max_vencimientos=3,
-        )
-        vencimiento_local_dt = vencimientos_local[-1] if vencimientos_local else None
+        # Unión de ambos — esto es lo que alimenta Walls y el heatmap de
+        # strikes (esas dos vistas quieren ver todo lo relevante de
+        # corto + mediano plazo junto, no separado como el Flip).
+        vencimientos_relevantes = sorted(set(vencimientos_local) | set(vencimientos_global))
 
         # RANGO DEL FLIP GLOBAL: antes ±15% (en BTC a 100k, ±$15.000 — muy
         # lejos para decisiones de intradiario/scalp). Ahora ±RANGO_FLIP_PCT,
@@ -1940,30 +2066,31 @@ with tab_dashboard:
         RANGO_FLIP_PCT = 0.04
 
         resultado_flip_global = calcular_flip(
-            instrumentos_deribit, precio_actual, vencimiento_max=vencimiento_global_max,
+            instrumentos_deribit, precio_actual,
+            vencimientos_permitidos=vencimientos_global,
             rango_pct=RANGO_FLIP_PCT,
             ponderar_por_tiempo=True,  # evita que el OI de vencimientos lejanos distorsione el flip
         )
         resultado_flip_local = calcular_flip(
-            instrumentos_deribit, precio_actual, vencimiento_max=vencimiento_local_dt,
+            instrumentos_deribit, precio_actual,
+            vencimientos_permitidos=vencimientos_local,
             rango_pct=RANGO_FLIP_PCT,
             ponderar_por_tiempo=True,  # dos vencimientos mezclados: pesar el diario sobre el siguiente
         )
 
-        # WALLS: ahora limitadas a los mismos vencimientos semanales/corto
-        # plazo ya filtrados arriba (vencimientos_global), y usando el
-        # score combinado (OI x gamma x peso tiempo x peso distancia) en
-        # vez de OI bruto — ver encontrar_wall y _calcular_score_strikes.
-        # Esto evita que un strike lejano con mucho OI viejo (vencimiento
-        # mensual/trimestral) le gane al strike que realmente importa para
-        # el precio actual.
+        # WALLS: limitadas al universo RELEVANTE (Local ∪ Global, ver
+        # arriba) — no solo a vencimientos_global — para no perder
+        # cobertura de corto plazo ahora que Global ya no incluye esos
+        # vencimientos. Usa el score combinado (OI x gamma x peso tiempo
+        # x peso distancia) en vez de OI bruto — ver encontrar_wall y
+        # _calcular_score_strikes.
         call_wall = encontrar_wall(
             instrumentos_deribit, "call", precio_actual, ahora,
-            vencimientos_permitidos=vencimientos_global,
+            vencimientos_permitidos=vencimientos_relevantes,
         )
         put_wall = encontrar_wall(
             instrumentos_deribit, "put", precio_actual, ahora,
-            vencimientos_permitidos=vencimientos_global,
+            vencimientos_permitidos=vencimientos_relevantes,
         )
 
         if resultado_flip_global:
@@ -2972,7 +3099,7 @@ with tab_opciones:
 
         tabla_strikes = calcular_tabla_strikes(
             instrumentos_deribit, precio_actual, ahora,
-            vencimientos_permitidos=vencimientos_global,
+            vencimientos_permitidos=vencimientos_relevantes,
             max_strikes=20,  # más alto que antes: ahora cada fila puede llevar call+put juntos, así que se necesitan más filas crudas para llenar una buena cantidad de strikes visibles
         )
 
