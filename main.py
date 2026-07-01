@@ -27,7 +27,7 @@ st.set_page_config(
 # cambie (nueva capa, fix, ajuste de UI), no cada vez que llega un
 # dato nuevo de Binance/Deribit.
 VERSION_APP = "V 0.0.5"
-FECHA_ULTIMA_ACTUALIZACION = "29/06/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
+FECHA_ULTIMA_ACTUALIZACION = "30/06/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
 
 # ----------------------------------
 # REFRESH DINÁMICO AL ARRANQUE
