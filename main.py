@@ -26,7 +26,7 @@ st.set_page_config(
 # actualizá FECHA_ULTIMA_ACTUALIZACION a mano cada vez que el CÓDIGO
 # cambie (nueva capa, fix, ajuste de UI), no cada vez que llega un
 # dato nuevo de Binance/Deribit.
-VERSION_APP = "V 0.0.7"
+VERSION_APP = "V 0.0.6"
 FECHA_ULTIMA_ACTUALIZACION = "01/07/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
 
 # ----------------------------------
@@ -1294,7 +1294,78 @@ def detectar_zonas_gamma_local(curva, spot_actual):
     return zona_hi, zona_lo
 
 
-def vencimiento_mas_proximo(instrumentos):
+def _detectar_iman_dorado(niveles_tagged, precio_actual, tolerancia_pct=0.35):
+    """
+    IMÁN DORADO: detecta zonas donde coinciden (dentro de una tolerancia
+    % chica) niveles calculados por métodos INDEPENDIENTES entre sí —
+    no un solo indicador dando la misma lectura dos veces, sino distintas
+    fuentes de cálculo llegando al mismo precio por caminos distintos.
+
+    LÍMITE HONESTO (importante): esto NO es "spot + futuro + derivado"
+    en el sentido literal de 3 mercados con order book propio — hoy el
+    dashboard no tiene profundidad de book de futuros a nivel de precio
+    (eso está en el roadmap, ligado al WebSocket de order book pendiente).
+    Las 3 fuentes reales que SÍ tenemos, calculadas de forma
+    independiente, son:
+      - "Spot-liquidez": swing highs/lows de velas Binance (dónde el
+        precio ya reaccionó antes).
+      - "Opciones-Wall": strike con más OI ponderado en Deribit (dónde
+        hay más contratos abiertos, posición estática).
+      - "Opciones-Régimen": Flip Point Local o pico de Gamma Zone (dónde
+        cambia el comportamiento dinámico de los dealers, no la posición
+        en sí).
+    Cuando 2 o más de estas fuentes coinciden en el mismo precio (dentro
+    de tolerancia_pct), es una confluencia real entre métodos distintos
+    -> más peso estadístico que cualquiera de las 3 por separado. Si el
+    día de mañana se suma profundidad real de futuros, se agrega como
+    una 4ta fuente ("Futuro-book") a esta misma función sin cambiar la
+    lógica de clustering.
+
+    niveles_tagged: lista de tuplas (fuente: str, precio: float).
+    Devuelve lista de dicts {precio, fuentes, fuerza, distancia_pct},
+    ordenada por cercanía absoluta al precio actual. fuerza = cantidad
+    de fuentes DISTINTAS que coincidieron (2 o 3).
+    """
+
+    if not niveles_tagged or precio_actual <= 0:
+        return []
+
+    niveles_ordenados = sorted(niveles_tagged, key=lambda par: par[1])
+    usados = [False] * len(niveles_ordenados)
+    grupos = []
+
+    for i, (fuente_i, precio_i) in enumerate(niveles_ordenados):
+        if usados[i]:
+            continue
+
+        grupo = [(fuente_i, precio_i)]
+        usados[i] = True
+
+        for j in range(i + 1, len(niveles_ordenados)):
+            if usados[j]:
+                continue
+            fuente_j, precio_j = niveles_ordenados[j]
+            distancia_pct = abs(precio_j - precio_i) / precio_actual * 100
+            if distancia_pct <= tolerancia_pct:
+                grupo.append((fuente_j, precio_j))
+                usados[j] = True
+
+        fuentes_distintas = sorted(set(f for f, _ in grupo))
+
+        if len(fuentes_distintas) >= 2:
+            precio_promedio = sum(p for _, p in grupo) / len(grupo)
+            grupos.append({
+                "precio": precio_promedio,
+                "fuentes": fuentes_distintas,
+                "fuerza": len(fuentes_distintas),
+                "distancia_pct": (precio_promedio - precio_actual) / precio_actual * 100,
+            })
+
+    grupos.sort(key=lambda g: abs(g["distancia_pct"]))
+
+    return grupos
+
+
     """Devuelve el datetime del vencimiento más próximo entre todos los instrumentos."""
 
     if not instrumentos:
@@ -2184,18 +2255,49 @@ with tab_dashboard:
     )
 
     # ----------------------------------
+    # 🧲✨ IMÁN DORADO — confluencia entre fuentes independientes
+    # (ver docstring de _detectar_iman_dorado para el límite honesto de
+    # qué significa "3 fuentes" hoy, y qué falta para que sea 4 reales).
+    # ----------------------------------
+
+    TOLERANCIA_IMAN_DORADO_PCT = 0.15 if modo == "Microscalp" else 0.35
+
+    niveles_para_iman_dorado = []
+    for s in soportes:
+        niveles_para_iman_dorado.append(("Spot-liquidez", s))
+    for r in resistencias:
+        niveles_para_iman_dorado.append(("Spot-liquidez", r))
+    if call_wall:
+        niveles_para_iman_dorado.append(("Opciones-Wall", call_wall["strike"]))
+    if put_wall:
+        niveles_para_iman_dorado.append(("Opciones-Wall", put_wall["strike"]))
+    if resultado_flip_local and resultado_flip_local.get("flip_point"):
+        niveles_para_iman_dorado.append(("Opciones-Régimen", resultado_flip_local["flip_point"]))
+    if zona_gamma_hi:
+        niveles_para_iman_dorado.append(("Opciones-Régimen", zona_gamma_hi["precio"]))
+    if zona_gamma_lo:
+        niveles_para_iman_dorado.append(("Opciones-Régimen", zona_gamma_lo["precio"]))
+
+    iman_dorado_grupos = _detectar_iman_dorado(
+        niveles_para_iman_dorado, precio_actual, tolerancia_pct=TOLERANCIA_IMAN_DORADO_PCT
+    )
+    iman_dorado_activo = iman_dorado_grupos[0] if iman_dorado_grupos else None
+
+    # ----------------------------------
     # BOTONERA DE CAPAS (toggles individuales, estilo overlay de trading)
     # ----------------------------------
 
     if "capas_activas" not in st.session_state:
         st.session_state.capas_activas = {
             "IMAN": True,
+            "IMAN_DORADO": True,
             "MINI_FLIP": True,
             "FLIP_FULL": True,
             "GAMMA_ZONE": False,
             "WALLS": False,
             "ABSORB": True,
         }
+    st.session_state.capas_activas.setdefault("IMAN_DORADO", True)
     # Migración: si quedó guardada una sesión vieja con la clave "FLIP"
     # unificada, la separamos para no romper el estado de quien ya tenía
     # el dashboard abierto antes de este cambio.
@@ -2206,36 +2308,47 @@ with tab_dashboard:
 
     st.markdown("**Capas sobre el gráfico**")
 
-    b1, b2, b3, b4, b5, b6 = st.columns(6)
+    b1, b2, b3, b4, b5, b6, b7 = st.columns(7)
 
     with b1:
         st.session_state.capas_activas["IMAN"] = st.toggle(
             "🧲 IMÁN", value=st.session_state.capas_activas["IMAN"], key="cap_iman"
         )
     with b2:
+        st.session_state.capas_activas["IMAN_DORADO"] = st.toggle(
+            "🧲✨ DORADO", value=st.session_state.capas_activas["IMAN_DORADO"], key="cap_iman_dorado",
+            help=(
+                "Se activa cuando coinciden (dentro de ±0.35%, o ±0.15% en Microscalp) "
+                "2 o más fuentes calculadas de forma independiente: liquidez Spot, "
+                "Wall de Opciones y Flip/Gamma de Opciones. Ver detalle completo más "
+                "abajo, en 'Detalle de niveles activos'."
+            )
+        )
+    with b3:
         st.session_state.capas_activas["MINI_FLIP"] = st.toggle(
             "🔁 MINI FLIP", value=st.session_state.capas_activas["MINI_FLIP"], key="cap_mini_flip",
             help="Flip Cercano (Local): vencimientos de corto plazo seleccionados por carga real de OI/gamma (1 a 3, el más próximo siempre incluido). Rango de búsqueda ±1.8% (Normal/Scalp) o ±0.8% (Microscalp)."
         )
-    with b3:
+    with b4:
         st.session_state.capas_activas["FLIP_FULL"] = st.toggle(
             "🔁 FLIP FULL", value=st.session_state.capas_activas["FLIP_FULL"], key="cap_flip_full",
             help="Flip Semanal (Global): agrega los próximos 5 vencimientos semanales reales de Deribit (viernes), incluyendo todos los del mes en curso. Pensado para Normal/intradiario."
         )
-    with b4:
+    with b5:
         st.session_state.capas_activas["GAMMA_ZONE"] = st.toggle(
             "🌀 GAMMA ZONE", value=st.session_state.capas_activas["GAMMA_ZONE"], key="cap_gamma"
         )
-    with b5:
+    with b6:
         st.session_state.capas_activas["WALLS"] = st.toggle(
             "🧱 WALLS", value=st.session_state.capas_activas["WALLS"], key="cap_walls"
         )
-    with b6:
+    with b7:
         st.session_state.capas_activas["ABSORB"] = st.toggle(
             "🧊 ABSORB", value=st.session_state.capas_activas["ABSORB"], key="cap_absorb"
         )
 
     capas = st.session_state.capas_activas
+
 
     # ----------------------------------
     # GRÁFICO PRINCIPAL: CANDLESTICK + OVERLAY DE NIVELES
