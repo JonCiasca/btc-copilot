@@ -26,8 +26,8 @@ st.set_page_config(
 # actualizá FECHA_ULTIMA_ACTUALIZACION a mano cada vez que el CÓDIGO
 # cambie (nueva capa, fix, ajuste de UI), no cada vez que llega un
 # dato nuevo de Binance/Deribit.
-VERSION_APP = "V 0.0.5"
-FECHA_ULTIMA_ACTUALIZACION = "30/06/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
+VERSION_APP = "V 0.0.6"
+FECHA_ULTIMA_ACTUALIZACION = "01/07/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
 
 # ----------------------------------
 # REFRESH DINÁMICO AL ARRANQUE
@@ -180,7 +180,7 @@ with tab_dashboard:
         st.session_state.oi_historial = []
 
 
-    c_normal, c_scalp = st.columns(2)
+    c_normal, c_scalp, c_microscalp = st.columns(3)
 
     with c_normal:
         if st.button(
@@ -199,7 +199,7 @@ with tab_dashboard:
         if st.button(
             "⚡ Scalp",
             help=(
-                "Pensado para operativa de muy corto plazo. Las mismas temporalidades "
+                "Pensado para operativa de corto plazo. Las mismas temporalidades "
                 "(5M/15M/1H) se traducen a velas más chicas (1M/3M/5M) para reaccionar "
                 "más rápido. Prioriza microflujo, presión inmediata y reacción del "
                 "precio sobre niveles cercanos — usá el Flip Cercano (Local) y la "
@@ -207,6 +207,21 @@ with tab_dashboard:
             ),
         ):
             st.session_state.modo = "Scalp"
+            st.rerun()
+
+    with c_microscalp:
+        if st.button(
+            "🔬 Microscalp",
+            help=(
+                "Pensado para operativa de segundos-a-minutos: SOLO velas de 1M, "
+                "con ventana de análisis más corta (menos velas, swings más chicos) "
+                "y el Flip Cercano recalculado en un rango mucho más angosto "
+                "(±0.8% en vez de ±1.8%). Ignora el selector 5M/15M/1H — siempre "
+                "opera sobre 1M. Prioriza reacción inmediata: usalo solo si tu "
+                "gestión de riesgo trabaja con stops chicos (~100-180 USD)."
+            ),
+        ):
+            st.session_state.modo = "Microscalp"
             st.rerun()
 
 
@@ -230,6 +245,13 @@ with tab_dashboard:
         elif timeframe == "1h":
             temporalidad_analizada = "⚡5M"
             data_timeframe = "5m"
+
+    elif modo == "Microscalp":
+        # Microscalp ignora el selector 5M/15M/1H a propósito: siempre
+        # trabaja sobre 1M puro, con ventana ultra corta (ver más abajo,
+        # límite de velas y ventana de swing recalibrados para este modo).
+        temporalidad_analizada = "🔬1M ULTRA"
+        data_timeframe = "1m"
 
     else:
         temporalidad_analizada = timeframe.upper()
@@ -1724,9 +1746,9 @@ with tab_dashboard:
             st.metric("Precio BTC", f"${precio:,.2f}")
 
         with c2:
-            if modo == "Scalp":
+            if modo in ("Scalp", "Microscalp"):
                 st.metric("Cambio 24h", f"{cambio_24h:+.2f}%", 
-                         help="En Modo Scalp se muestra 24h por simplicidad (1H se calcula más abajo)")
+                         help="En Scalp/Microscalp se muestra 24h por simplicidad (1H se calcula más abajo)")
             else:
                 st.metric("Cambio 24h", f"{cambio_24h:+.2f}%")
 
@@ -1777,7 +1799,14 @@ with tab_dashboard:
     # de 50 velas pensado para tendencia -> el gráfico mostraba menos
     # velas/rango que en los otros sub-modos de Scalp (1m, 3m), que sí
     # pedían 100 velas frescas. Ahora todos los sub-modos son consistentes.
-    df = obtener_velas(data_timeframe, 100)
+    #
+    # Microscalp pide una ventana ULTRA CORTA (40 velas de 1M ≈ 40 minutos)
+    # en vez de las 100 estándar: a esa escala, velas de hace más de
+    # 40 minutos son ruido de otro régimen de mercado, no contexto útil
+    # para una entrada de segundos-a-minutos.
+    LIMITE_VELAS_MICROSCALP = 40
+    limite_velas_grafico = LIMITE_VELAS_MICROSCALP if modo == "Microscalp" else 100
+    df = obtener_velas(data_timeframe, limite_velas_grafico)
 
     # Punto de control central: si el proxy no respondió, df viene vacío.
     # En vez de dejar que explote en cualquier otro .iloc[-1] más adelante
@@ -1806,7 +1835,13 @@ with tab_dashboard:
         "1h": 5,
     }
 
-    ventana_swing_activa = ventanas_swing_por_timeframe.get(data_timeframe, 5)
+    # Microscalp usa su propia ventana (más angosta que el "1m" de Scalp):
+    # a 1m puro y ventana ultra corta, un swing de 12 velas tarda demasiado
+    # en confirmar — bajamos a 4 para que reaccione a los micro-swings reales.
+    if modo == "Microscalp":
+        ventana_swing_activa = 4
+    else:
+        ventana_swing_activa = ventanas_swing_por_timeframe.get(data_timeframe, 5)
 
     cambio_reciente_precio, cambio_previo_precio, estado_velocidad = calcular_velocidad_precio(df)
 
@@ -1930,23 +1965,28 @@ with tab_dashboard:
         )
         vencimiento_local_dt = vencimientos_local[-1] if vencimientos_local else None
 
-        # RANGO DEL FLIP GLOBAL: antes ±15% (en BTC a 100k, ±$15.000 — muy
-        # lejos para decisiones de intradiario/scalp). Ahora ±RANGO_FLIP_PCT,
-        # pensado para que el Flip Point quede en una zona realmente
-        # operable (del orden de mil-pocos miles de USD), no perdido en el
-        # horizonte. Mismo rango acotado se usa para Local (antes ya estaba
-        # bien calibrado, pero se deja explícito para que ambos compartan
-        # la misma escala de análisis).
-        RANGO_FLIP_PCT = 0.04
+        # RANGO DEL FLIP: Global y Local ya NO comparten el mismo rango de
+        # búsqueda — usar la misma ventana para ambos era, en la práctica,
+        # la razón por la que Local casi nunca mostraba algo distinto de
+        # Global. Ahora cada uno tiene su propia escala, y Microscalp usa
+        # una tercera, todavía más angosta, acorde a su horizonte de
+        # segundos-a-minutos:
+        #   - Global (mediano/largo plazo): ±6% — zona amplia, varios vencimientos.
+        #   - Local (Scalp/Normal, corto plazo): ±1.8% — reacciona rápido
+        #     sin perderse en ruido de precio lejano.
+        #   - Local en Microscalp: ±0.8% — el flip tiene que estar MUY
+        #     cerca del spot para ser información operable a esta escala.
+        RANGO_FLIP_GLOBAL_PCT = 0.06
+        RANGO_FLIP_LOCAL_PCT = 0.008 if modo == "Microscalp" else 0.018
 
         resultado_flip_global = calcular_flip(
             instrumentos_deribit, precio_actual, vencimiento_max=vencimiento_global_max,
-            rango_pct=RANGO_FLIP_PCT,
+            rango_pct=RANGO_FLIP_GLOBAL_PCT,
             ponderar_por_tiempo=True,  # evita que el OI de vencimientos lejanos distorsione el flip
         )
         resultado_flip_local = calcular_flip(
             instrumentos_deribit, precio_actual, vencimiento_max=vencimiento_local_dt,
-            rango_pct=RANGO_FLIP_PCT,
+            rango_pct=RANGO_FLIP_LOCAL_PCT,
             ponderar_por_tiempo=True,  # dos vencimientos mezclados: pesar el diario sobre el siguiente
         )
 
@@ -2109,6 +2149,12 @@ with tab_dashboard:
 
     st.markdown("**🔇 Filtro de ruido de liquidez**")
 
+    # Umbral de ruido dependiente del modo: Microscalp opera con objetivos
+    # y stops mucho más chicos (ver lectura de gestión más abajo), así que
+    # un nivel a $130 de distancia sigue siendo relevante ahí, mientras
+    # que en Normal/Scalp seguiría siendo ruido.
+    UMBRAL_RUIDO_LIQUIDEZ_USD = 45.0 if modo == "Microscalp" else 130.0
+
     filtro_liquidez_activo = st.toggle(
         "Ignorar niveles Imán (MAG) muy pegados al precio",
         value=True,
@@ -2117,16 +2163,15 @@ with tab_dashboard:
             "dibujada sobre el gráfico principal, Y el resumen de 'Niveles Imán "
             "(liquidez)' más abajo en la página. No son cálculos separados — "
             "es el mismo filtro aplicado en ambos.\n\n"
-            "Cuando está activo, solo se muestran soportes/resistencias Imán a "
-            "más de $130 USD del precio actual. Pensado para operativa con "
-            "objetivos de 250–1000 USD y stops de 200–350 USD: un nivel a "
-            "40–80 USD de distancia es ruido, no un nivel operable."
+            f"Cuando está activo, solo se muestran soportes/resistencias Imán a "
+            f"más de ${UMBRAL_RUIDO_LIQUIDEZ_USD:.0f} USD del precio actual "
+            f"({'calibrado a Microscalp: objetivos 120-300 USD' if modo == 'Microscalp' else 'objetivos 250–1000 USD y stops 200–350 USD'})."
         ),
     )
 
-    DISTANCIA_MINIMA_USD = 130.0 if filtro_liquidez_activo else 0.0
+    DISTANCIA_MINIMA_USD = UMBRAL_RUIDO_LIQUIDEZ_USD if filtro_liquidez_activo else 0.0
     st.caption(
-        "Filtro activo: ignorando niveles Imán a menos de $130 del precio (afecta al gráfico y al resumen de abajo)."
+        f"Filtro activo: ignorando niveles Imán a menos de ${UMBRAL_RUIDO_LIQUIDEZ_USD:.0f} del precio (afecta al gráfico y al resumen de abajo)."
         if filtro_liquidez_activo else
         "Filtro inactivo: mostrando todos los niveles Imán, incluidos los más cercanos (afecta al gráfico y al resumen de abajo)."
     )
@@ -2170,7 +2215,7 @@ with tab_dashboard:
     with b2:
         st.session_state.capas_activas["MINI_FLIP"] = st.toggle(
             "🔁 MINI FLIP", value=st.session_state.capas_activas["MINI_FLIP"], key="cap_mini_flip",
-            help="Flip Cercano (Local): vencimientos de corto plazo seleccionados por carga real de OI/gamma (1 a 3, el más próximo siempre incluido). Pensado para Scalp."
+            help="Flip Cercano (Local): vencimientos de corto plazo seleccionados por carga real de OI/gamma (1 a 3, el más próximo siempre incluido). Rango de búsqueda ±1.8% (Normal/Scalp) o ±0.8% (Microscalp)."
         )
     with b3:
         st.session_state.capas_activas["FLIP_FULL"] = st.toggle(
@@ -2604,106 +2649,137 @@ with tab_dashboard:
         )
 
                 # =============================================
-        # SCALP EDGE SCORE + DEALER SCORE TUNED
+        # SCALP EDGE SCORE + SCORE DE CONTEXTO (recalibrados)
         # =============================================
+        # Rediseño (pedido del usuario: los scores no eran claros y casi
+        # siempre terminaban en "esperar"). Dos cambios de fondo:
+        #   1. Cada score ahora es la suma de componentes con peso FIJO
+        #      y documentado que suman exactamente 100 — se puede ver el
+        #      desglose completo en el expander de abajo, no es una caja
+        #      negra.
+        #   2. Los umbrales de lectura se bajaron: antes hacía falta
+        #      75-78/100 para la lectura "alta", un nivel que rara vez se
+        #      alcanzaba con todos los componentes activos a la vez. Ahora
+        #      65/100 alcanza para "alta confluencia", en línea con cómo
+        #      se distribuyen realmente los puntos entre sí.
+        # Aplica igual en Scalp y Microscalp; en Microscalp los umbrales
+        # de distancia (Flip, Wall) ya vienen recalibrados más arriba
+        # (rango ±0.8% en vez de ±1.8%), así que el score reacciona a
+        # movimientos más chicos sin cambiar su fórmula.
 
-        # --- SCALP EDGE SCORE (prioridad alta para tu estilo) ---
-        scalp_edge = 0.0
-
-        # 1. Absorción cerca de nivel Imán (muy fuerte para scalp)
         cerca_de_nivel = nivel_mas_cercano(precio_actual, soportes, resistencias)
         en_zona_relevante = cerca_de_nivel is not None and cerca_de_nivel[2] < 0.25
 
-        if hay_absorcion and en_zona_relevante:
-            scalp_edge += 35
-        elif detalle_absorcion and detalle_absorcion["score"] >= 65:
-            scalp_edge += 18
+        componentes_scalp_edge = []  # [(nombre, puntos_obtenidos, puntos_max)]
 
-        # 2. Flip Local + Gamma Zone
+        # 1) Absorción (peso máximo: es la señal más directa de defensa
+        #    de un dealer sobre un nivel real) — máx 30
+        if hay_absorcion and en_zona_relevante:
+            p = 30
+        elif hay_absorcion:
+            p = 20
+        elif detalle_absorcion and detalle_absorcion["score"] >= 65:
+            p = 15
+        else:
+            p = 0
+        componentes_scalp_edge.append(("Absorción", p, 30))
+
+        # 2) Proximidad al Flip Local — máx 25
+        dist_flip_umbral_alto = 0.5 if modo == "Microscalp" else 0.8
+        dist_flip_umbral_medio = 1.0 if modo == "Microscalp" else 1.5
         if resultado_flip_local and resultado_flip_local.get("flip_point"):
             dist_flip_local = abs(resultado_flip_local["flip_point"] - precio_actual) / precio_actual * 100
-            if dist_flip_local < 0.8:  # muy cerca
-                scalp_edge += 25
-            elif dist_flip_local < 1.5:
-                scalp_edge += 15
+            if dist_flip_local < dist_flip_umbral_alto:
+                p = 25
+            elif dist_flip_local < dist_flip_umbral_medio:
+                p = 15
+            else:
+                p = 0
+        else:
+            p = 0
+        componentes_scalp_edge.append(("Proximidad Flip Local", p, 25))
 
-        # 3. Velocidad + Presión en timeframe operativo
-        if estado_velocidad == "acelerando":
-            scalp_edge += 15 if buy_pressure > 58 else 8
+        # 3) Velocidad + presión combinadas — máx 20
+        if estado_velocidad == "acelerando" and buy_pressure > 58:
+            p = 20
+        elif estado_velocidad == "acelerando":
+            p = 10
         elif estado_velocidad == "desacelerando" and hay_absorcion:
-            scalp_edge += 22
+            p = 20
+        else:
+            p = 0
+        componentes_scalp_edge.append(("Velocidad + presión", p, 20))
 
-        # 4. Presión taker fuerte
-        if buy_pressure > 65 or sell_pressure > 65:
-            scalp_edge += 12
+        # 4) Presión taker dominante — máx 15
+        p = 15 if (buy_pressure > 65 or sell_pressure > 65) else (8 if (buy_pressure > 58 or sell_pressure > 58) else 0)
+        componentes_scalp_edge.append(("Presión taker", p, 15))
 
-        # 5. Distancia a Wall más cercana
+        # 5) Proximidad a Wall (call/put) — máx 10
+        dist_wall = 999.0
         if call_wall or put_wall:
             dist_wall = min(
                 abs((call_wall["strike"] - precio_actual) / precio_actual * 100) if call_wall else 999,
                 abs((put_wall["strike"] - precio_actual) / precio_actual * 100) if put_wall else 999
             )
-            if dist_wall < 0.6:
-                scalp_edge += 10
+        p = 10 if dist_wall < 0.6 else (5 if dist_wall < 1.2 else 0)
+        componentes_scalp_edge.append(("Proximidad Wall", p, 10))
 
-        scalp_edge = round(min(scalp_edge, 100))
+        scalp_edge = round(min(sum(c[1] for c in componentes_scalp_edge), 100))
 
-        # --- Dealer Score mejorado (mantener compatibilidad) ---
-        dealer_score = 0.0
+        # --- Score de Contexto (ex "Dealer Score"): favorabilidad general
+        # del mercado para operar a favor de tendencia, no una señal de
+        # entrada. Componentes con peso fijo, máx 100. ---
+        componentes_contexto = []
 
-        # Reducimos peso de Funding y OI global (son más lentos)
-        if funding_disponible and funding_valor > 0:
-            dealer_score += 12 * min(abs(funding_valor) / 0.05, 1.0)
+        p = round(15 * min(abs(funding_valor) / 0.05, 1.0)) if (funding_disponible and funding_valor > 0) else 0
+        componentes_contexto.append(("Funding (sobrecompra)", p, 15))
 
-        if oi_disponible:
-            dealer_score += 8 * min(max((oi_valor - 90000) / 90000, 0), 1.0)
+        p = round(10 * min(max((oi_valor - 90000) / 90000, 0), 1.0)) if oi_disponible else 0
+        componentes_contexto.append(("Open Interest elevado", p, 10))
 
-        # Aumentamos peso en presión y microestructura
-        desbalance_presion = (buy_pressure - 50) / 50
-        dealer_score += 30 * max(0.0, desbalance_presion)
+        desbalance_presion = max(0.0, (buy_pressure - 50) / 50)
+        p = round(40 * desbalance_presion)
+        componentes_contexto.append(("Desbalance de presión", p, 40))
 
-        # Tendencia activa (del timeframe operativo)
         if "Alcista" in tendencia_activa:
-            dealer_score += 20
+            p = 35
         elif "Bajista" in tendencia_activa:
-            dealer_score += 18
+            p = 32
+        else:
+            p = 0
+        componentes_contexto.append(("Tendencia activa", p, 35))
 
-        dealer_score = round(min(dealer_score, 100))
+        dealer_score = round(min(sum(c[1] for c in componentes_contexto), 100))
 
         # Mostramos ambos scores
         col_score1, col_score2 = st.columns(2)
         with col_score1:
             st.metric("**Scalp Edge Score**", f"{scalp_edge}/100", 
-                     help="Score optimizado para scalp corto (stops 250-350, targets 500-1200). Prioriza absorción, Flip Local y microflujo.")
+                     help="Suma de 5 componentes con peso fijo (30+25+20+15+10=100): Absorción, Proximidad Flip Local, Velocidad+presión, Presión taker, Proximidad Wall. Ver desglose abajo.")
         with col_score2:
-            st.metric("Dealer Score", f"{dealer_score}/100")
+            st.metric("Score de Contexto", f"{dealer_score}/100",
+                     help="Suma de 4 componentes con peso fijo (15+10+40+35=100): Funding, OI, Desbalance de presión, Tendencia activa. Favorabilidad general, no es señal de entrada.")
 
-        # --- Recomendación clara ---
-        if scalp_edge >= 75:
+        with st.expander("🔍 Ver desglose de puntos (Scalp Edge / Contexto)"):
+            col_desglose1, col_desglose2 = st.columns(2)
+            with col_desglose1:
+                st.caption("**Scalp Edge Score**")
+                for nombre, puntos, maximo in componentes_scalp_edge:
+                    st.caption(f"• {nombre}: {puntos}/{maximo}")
+            with col_desglose2:
+                st.caption("**Score de Contexto**")
+                for nombre, puntos, maximo in componentes_contexto:
+                    st.caption(f"• {nombre}: {puntos}/{maximo}")
+
+        # --- Recomendación clara (umbrales recalibrados: antes 75/55) ---
+        if scalp_edge >= 65:
             recomendacion = "🟢 **ALTA CONFLUENCIA SCALP** — Buscar entrada en dirección de tendencia con confluencia de absorción + Flip Local."
-        elif scalp_edge >= 55:
+        elif scalp_edge >= 40:
             recomendacion = "🟡 **Oportunidad moderada** — Vigilar reacción en próximo nivel Imán."
         else:
             recomendacion = "🔴 **Esperar mejor setup** — Baja confluencia para scalp."
 
         st.info(recomendacion)
-
-        # Actor dominante (mejorado)
-        mm_score = 0
-        retail_proxy_score = 0
-
-        if hay_absorcion: mm_score += 3
-        if estado_velocidad == "desacelerando" and hay_absorcion: mm_score += 2
-        if estado_velocidad == "acelerando" and buy_pressure > 62: retail_proxy_score += 2
-
-        if mm_score >= 3:
-            actor_dominante = "🏦 **Market Maker defendiendo**"
-        elif retail_proxy_score >= 2:
-            actor_dominante = "👤 **Retail impulsando**"
-        else:
-            actor_dominante = "⚖️ Equilibrio"
-
-        st.caption(f"Actor dominante: {actor_dominante}")
     # -----------------------------
     # INSTITUCIONAL
     # -----------------------------
@@ -2887,6 +2963,137 @@ with tab_dashboard:
             )
 
         st.info(lectura_flow)
+
+with tab_dashboard:
+
+    # ----------------------------------
+    # PARTICIPANTES DE MERCADO (reemplaza al "Actor dominante" anterior)
+    # ----------------------------------
+    # Antes esto era una sola línea de caption con un umbral binario poco
+    # transparente (mm_score>=3 / retail_proxy_score>=2, sin institucional).
+    # Ahora es un panel propio: reparte 3 categorías (Market Maker, Retail,
+    # Institucional) con puntaje propio por categoría, normalizado a 100%
+    # entre las tres, y agrega un sesgo direccional probable según quién
+    # domina. Es una lectura ESTADÍSTICA basada en proxies (absorción,
+    # velocidad, presión, funding, OI, tendencia estructural) — no
+    # identifica contrapartes reales ni usa datos de book (Level 2).
+
+    st.divider()
+    st.subheader(
+        "🧑‍🤝‍🧑 Participantes de mercado",
+        help=(
+            "Estima qué tipo de participante domina el flujo ahora mismo, combinando "
+            "las señales ya calculadas arriba: Market Maker (absorción, defensa de "
+            "Wall/Flip Local), Retail (impulso direccional sin absorción, presión "
+            "taker fuerte) e Institucional (funding activo, OI creciendo, tendencia "
+            "estructural en 1H). Los 3 puntajes se normalizan para sumar 100% entre "
+            "sí, y de ahí se deriva un sesgo direccional probable — una lectura "
+            "estadística de probabilidades relativas, no una certeza ni una señal "
+            "de entrada."
+        ),
+    )
+
+    puntos_mm = 0
+    puntos_retail = 0
+    puntos_inst = 0
+
+    # --- Market Maker: defiende niveles, absorbe flujo sin dejar mover precio ---
+    if hay_absorcion:
+        puntos_mm += 40
+    elif detalle_absorcion and detalle_absorcion["score"] >= 60:
+        puntos_mm += 20
+    if dist_wall < 0.6:
+        puntos_mm += 20
+    if resultado_flip_local and resultado_flip_local.get("flip_point"):
+        dist_flip_local_mm = abs(resultado_flip_local["flip_point"] - precio_actual) / precio_actual * 100
+        if dist_flip_local_mm < dist_flip_umbral_alto:
+            puntos_mm += 15
+    if estado_velocidad == "desacelerando":
+        puntos_mm += 10
+
+    # --- Retail: impulso direccional agresivo, sin defensa visible de dealers ---
+    if estado_velocidad == "acelerando" and not hay_absorcion:
+        puntos_retail += 35
+    if buy_pressure > 65 or sell_pressure > 65:
+        puntos_retail += 30
+    if dist_wall > 1.2:
+        puntos_retail += 15
+
+    # --- Institucional: funding activo, OI creciendo, tendencia estructural 1H ---
+    if funding_disponible and abs(funding_valor) > 0.01:
+        puntos_inst += 25
+    if oi_disponible and cambio_oi > 0.15:
+        puntos_inst += 30
+    if "Alcista" in tendencia_1h or "Bajista" in tendencia_1h:
+        puntos_inst += 25
+
+    total_participantes = puntos_mm + puntos_retail + puntos_inst
+
+    if total_participantes > 0:
+        pct_mm = round(puntos_mm / total_participantes * 100)
+        pct_retail = round(puntos_retail / total_participantes * 100)
+        pct_inst = 100 - pct_mm - pct_retail
+    else:
+        pct_mm, pct_retail, pct_inst = 34, 33, 33
+
+    col_p1, col_p2, col_p3 = st.columns(3)
+    with col_p1:
+        st.metric("🏦 Market Maker", f"{pct_mm}%")
+        st.progress(pct_mm / 100)
+    with col_p2:
+        st.metric("👤 Retail", f"{pct_retail}%")
+        st.progress(pct_retail / 100)
+    with col_p3:
+        st.metric("🏛️ Institucional", f"{pct_inst}%")
+        st.progress(pct_inst / 100)
+
+    dominante_pct = max(pct_mm, pct_retail, pct_inst)
+
+    if dominante_pct == pct_mm:
+        if resultado_flip_local and resultado_flip_local.get("flip_point"):
+            sesgo_probable = (
+                "defensa de soporte (compra hacia el nivel)"
+                if resultado_flip_local["flip_point"] < precio_actual
+                else "defensa de resistencia (venta hacia el nivel)"
+            )
+        else:
+            sesgo_probable = "rango comprimido, sin dirección clara"
+        lectura_participantes = (
+            f"**Dominante: 🏦 Market Maker ({dominante_pct}%)**\n\n"
+            f"Comportamiento esperado: defensa de nivel, rango más comprimido.\n"
+            f"Sesgo probable: {sesgo_probable}."
+        )
+    elif dominante_pct == pct_retail:
+        sesgo_probable = "continuación alcista" if buy_pressure > sell_pressure else "continuación bajista"
+        lectura_participantes = (
+            f"**Dominante: 👤 Retail ({dominante_pct}%)**\n\n"
+            f"Comportamiento esperado: impulso direccional sin defensa visible de "
+            f"dealers — mayor riesgo de reversión brusca si aparece absorción.\n"
+            f"Sesgo probable: {sesgo_probable}."
+        )
+    else:
+        if "Alcista" in tendencia_1h:
+            sesgo_probable = "alcista estructural"
+        elif "Bajista" in tendencia_1h:
+            sesgo_probable = "bajista estructural"
+        else:
+            sesgo_probable = "neutral, a la espera de definición en 1H"
+        lectura_participantes = (
+            f"**Dominante: 🏛️ Institucional ({dominante_pct}%)**\n\n"
+            f"Comportamiento esperado: flujo más lento, ligado a funding/OI y "
+            f"tendencia de 1H.\n"
+            f"Sesgo probable: {sesgo_probable}."
+        )
+
+    st.info(lectura_participantes)
+
+    st.caption(
+        "⚠️ Lectura probabilística basada en proxies de velas/OI/funding, NO en "
+        "datos de book real (Level 2) ni en identificación real de contrapartes. "
+        "Los % son pesos relativos entre las 3 categorías, no una medición directa "
+        "de participación de mercado — es intuición estadística, no un hecho."
+    )
+
 with tab_opciones:
 
     # Mini-candlestick reutilizando la misma figura del dashboard
@@ -3384,7 +3591,7 @@ with tab_opciones:
     """
                 )
             else:
-                st.caption(f"No se detectó cruce de signo dentro de ±{RANGO_FLIP_PCT*100:.0f}% en los vencimientos agregados.")
+                st.caption(f"No se detectó cruce de signo dentro de ±{RANGO_FLIP_GLOBAL_PCT*100:.0f}% en los vencimientos agregados.")
 
         with col_f2:
 
@@ -3413,7 +3620,7 @@ with tab_opciones:
                     lado_local = "🟢 defendido como soporte (comprador)" if fp_local < precio_actual else "🔴 defendido como resistencia (vendedor)"
                     flip_txt = f"**Flip Point:** ${fp_local:,.0f} ({dist_local:+.2f}% desde el spot)\n**Lado dominante:** {lado_local}"
                 else:
-                    flip_txt = f"**Flip Point:** sin cruce dentro de ±{RANGO_FLIP_PCT*100:.0f}% (está fuera del rango explorado)"
+                    flip_txt = f"**Flip Point:** sin cruce dentro de ±{RANGO_FLIP_LOCAL_PCT*100:.1f}% (está fuera del rango explorado)"
 
                 st.info(
                     f"""
@@ -3596,7 +3803,16 @@ with tab_dashboard:
 
     st.divider()
 
-    st.subheader("🧠 Market Intelligence")
+    st.subheader(
+        "🧠 Market Intelligence",
+        help=(
+            "Distinto del panel '🧑‍🤝‍🧑 Participantes de mercado' de más arriba: "
+            "ese es un reparto de 3 categorías (MM/Retail/Institucional) enfocado en "
+            "el microflujo ACTUAL. Este es un puntaje estructural de 2 vías "
+            "(Institucional vs Retail) sobre OI, funding, flow y tendencia de 1H — "
+            "pensado como contexto de fondo, no de entrada inmediata."
+        ),
+    )
 
     institucional_score = 0
     retail_score = 0
@@ -3685,42 +3901,58 @@ with tab_dashboard:
     # CEREBRO GENERAL COPILOT - LECTURA SCALP MEJORADA
     # -----------------------------
 
-    if modo == "Scalp":
+    if modo in ("Scalp", "Microscalp"):
 
         confluencia_scalp = scalp_edge
+        etiqueta_modo = "MICROSCALP" if modo == "Microscalp" else "SCALP"
 
-        # TP dinámico según confluencia
-        if confluencia_scalp >= 78:
-            tp_sugerido = "700-1200 USD"
-            stop_sugerido = "140-220 USD"
+        # TP/Stop escalados por modo: Microscalp opera en una escala de
+        # precio mucho más chica (1M puro, flip local ±0.8%) — mantener
+        # los mismos 500-1200 USD de Scalp ahí sería pedirle al mercado
+        # un movimiento que rara vez llega en ese horizonte de tiempo.
+        if modo == "Microscalp":
+            tabla_gestion = {
+                "ALTA":     ("120-220 USD", "60-100 USD"),
+                "BUENA":    ("100-180 USD", "70-110 USD"),
+                "MODERADA": ("90-150 USD",  "60-100 USD"),
+                "BAJA":     ("80-130 USD",  "80-140 USD"),
+            }
+        else:
+            tabla_gestion = {
+                "ALTA":     ("700-1200 USD", "140-220 USD"),
+                "BUENA":    ("600-950 USD",  "180-280 USD"),
+                "MODERADA": ("550-850 USD",  "140-230 USD"),
+                "BAJA":     ("500-750 USD",  "200-350 USD"),
+            }
+
+        # Umbrales de confianza alineados con el Scalp Edge Score
+        # recalibrado (antes 78/62, casi nunca alcanzables; ver desglose
+        # de componentes más arriba para el detalle).
+        if confluencia_scalp >= 65:
             confianza = "ALTA"
-        elif confluencia_scalp >= 62:
-            tp_sugerido = "600-950 USD"
-            stop_sugerido = "180-280 USD"
+        elif confluencia_scalp >= 45:
             confianza = "BUENA"
         elif hay_absorcion and en_zona_relevante:
-            tp_sugerido = "550-850 USD"
-            stop_sugerido = "140-230 USD"
             confianza = "MODERADA"
         else:
-            tp_sugerido = "500-750 USD"
-            stop_sugerido = "200-350 USD"
             confianza = "BAJA"
 
-        if confluencia_scalp >= 78:
+        tp_sugerido, stop_sugerido = tabla_gestion[confianza]
+
+        if confianza == "ALTA":
             lectura = (
-                f"⚡ **SCALP {confianza}** — Excelente setup.\n\n"
+                f"⚡ **{etiqueta_modo} {confianza}** — Excelente setup.\n\n"
                 f"Absorción + Flip Local + presión alineados.\n"
                 f"**Stop:** {stop_sugerido} | **TP inicial:** {tp_sugerido}\n"
                 "Dejar correr parte si rompe con volumen y momentum."
             )
-        elif confluencia_scalp >= 62:
+        elif confianza == "BUENA":
             lectura = (
-                f"⚡ **Scalp {confianza}** — Setup válido.\n\n"
+                f"⚡ **{etiqueta_modo} {confianza}** — Setup válido.\n\n"
                 f"Confluencia aceptable.\n"
                 f"**Stop:** {stop_sugerido} | **TP primario:** {tp_sugerido}"
             )
-        elif hay_absorcion and en_zona_relevante:
+        elif confianza == "MODERADA":
             lectura = (
                 f"⚡ **Absorción en zona clave** — Posible rebote.\n\n"
                 f"**Stop:** {stop_sugerido} | **TP:** {tp_sugerido}"
@@ -3732,8 +3964,10 @@ with tab_dashboard:
             )
         else:
             lectura = (
-                "⚡ **Sin confluencia clara para scalp** — Mejor esperar.\n\n"
-                "Esperar absorción o Flip Local cercano antes de operar."
+                f"⚡ **Sin confluencia clara para {etiqueta_modo.lower()}** — Mejor esperar.\n\n"
+                f"Scalp Edge {confluencia_scalp}/100 (umbral BUENA: 45). "
+                "Esperar absorción o Flip Local cercano antes de operar — ver "
+                "desglose de puntos más arriba para saber qué falta."
             )
 
         st.info(lectura)
