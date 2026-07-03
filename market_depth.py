@@ -43,20 +43,45 @@ from datetime import datetime, timezone
 # FETCH (REST, vía proxy)
 # ----------------------------------
 
-def obtener_profundidad(proxy_url, mercado="spot", symbol="BTCUSDT", limite=100):
+def _interpretar_error_binance(data):
+    """
+    Binance devuelve errores de rate-limit/ban como {"code": -1003, "msg": "..."},
+    NO envueltos en {"error": ...} — a diferencia del resto del proxy. Sin este
+    traductor, el usuario ve el dict crudo de Binance en pantalla. code -1003
+    específicamente es BAN DE PESO (weight ban): la IP del proxy pidió demasiado
+    en poco tiempo y Binance la bloqueó hasta un timestamp determinado — no es
+    un error de símbolo/parámetros, es un corte temporal de acceso completo.
+    """
+    if not isinstance(data, dict):
+        return "Respuesta inesperada del proxy"
+
+    if "code" in data and "msg" in data:
+        codigo = data["code"]
+        if codigo == -1003:
+            return (
+                "IP del proxy temporalmente baneada por Binance (rate-limit de peso). "
+                "Se recupera sola pasado un tiempo — no insistir con más pedidos mientras tanto."
+            )
+        return f"Binance code {codigo}: {data['msg']}"
+
+    return data.get("error", str(data))
+
+
+def obtener_profundidad(proxy_url, mercado="spot", symbol="BTCUSDT", limite=20):
     """
     Pide un snapshot de order book vía el proxy de Render.
 
     mercado: "spot" -> endpoint /depth (Binance spot)
              "futures" -> endpoint /futures/depth (Binance Futures)
 
+    limite baja a 20 por default (antes 100): en Binance Futures el
+    weight de /fapi/v1/depth salta de 2 a 5 al pasar de limit=50 a
+    limit=100 — con el heatmap guardando como mucho 40 niveles por
+    lado igual, pedir 100 era pagar weight extra sin uso real. Bajar
+    esto es la mitigación más directa contra los bans -1003.
+
     Devuelve (snapshot_dict, None) si funciona, o (None, error_str) si
     falla — mismo patrón de retorno que el resto de obtener_* en main.py.
-
-    Espera del proxy una respuesta JSON con "bids" y "asks", cada uno
-    lista de [precio_str, cantidad_str] (formato nativo de Binance
-    /api/v3/depth y /fapi/v1/depth). Ver instrucciones de proxy aparte
-    para el endpoint exacto a agregar en Render.
     """
 
     endpoint = "/depth" if mercado == "spot" else "/futures/depth"
@@ -67,8 +92,7 @@ def obtener_profundidad(proxy_url, mercado="spot", symbol="BTCUSDT", limite=100)
         data = respuesta.json()
 
         if not isinstance(data, dict) or "bids" not in data or "asks" not in data:
-            msg = data.get("error", str(data)) if isinstance(data, dict) else "Respuesta inesperada del proxy"
-            return None, msg
+            return None, _interpretar_error_binance(data)
 
         bids = [(float(p), float(q)) for p, q in data["bids"]]
         asks = [(float(p), float(q)) for p, q in data["asks"]]
@@ -259,6 +283,52 @@ def figura_heatmap_profundidad(buckets, tiempos, matriz, precio_actual, titulo):
         xaxis_title="snapshots recientes (cada ~15s) →",
         yaxis_title="precio (USD)",
         margin=dict(l=10, r=10, t=40, b=30),
+    )
+
+    return fig
+
+
+def figura_superficie_profundidad(buckets, tiempos, matriz, precio_actual, titulo):
+    """
+    Versión "capas apiladas" de la misma matriz que usa el heatmap —
+    go.Surface con contornos de proyección en el piso, que es la
+    aproximación más honesta lograble con Plotly puro al estilo de
+    terreno/capas del ejemplo de referencia (voxel-render real
+    requeriría un motor 3D dedicado tipo Three.js, fuera de alcance
+    de un gráfico Plotly embebido en Streamlit).
+
+    Misma fuente de datos que figura_heatmap_profundidad (snapshots
+    REST cada ~15s) — esto NO agrega resolución temporal nueva, solo
+    cambia la lectura visual de la misma información.
+    """
+
+    fig = go.Figure(
+        data=go.Surface(
+            z=matriz,
+            x=list(range(len(tiempos))),
+            y=buckets,
+            colorscale=[[0.0, "#ef4444"], [0.5, "#12151c"], [1.0, "#22c55e"]],
+            cmid=0,
+            contours={
+                "z": {"show": True, "usecolormap": True, "project_z": True}
+            },
+            showscale=False,
+        )
+    )
+
+    fig.update_layout(
+        title=titulo,
+        template="plotly_dark",
+        paper_bgcolor="#0e1117",
+        scene=dict(
+            xaxis_title="snapshots →",
+            yaxis_title="precio (USD)",
+            zaxis_title="tamaño (ask ⟵ ⟶ bid)",
+            bgcolor="#0e1117",
+            camera=dict(eye=dict(x=1.6, y=-1.6, z=0.9)),
+        ),
+        height=480,
+        margin=dict(l=0, r=0, t=40, b=0),
     )
 
     return fig
