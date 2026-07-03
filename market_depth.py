@@ -193,6 +193,27 @@ def lectura_imbalance(metricas):
 # HISTORIAL (para el heatmap precio x tiempo)
 # ----------------------------------
 
+def procesar_snapshot_cache(session_state, clave, snapshot_nuevo):
+    """
+    Cachea el último snapshot válido de una fuente (spot/futures) en
+    session_state — mismo patrón que ya usa main.py para funding y OI
+    (ultimo_funding_valido, ultimo_oi_valido). Evita que un ban -1003
+    temporal borre las métricas de pantalla; en su lugar se muestra el
+    último dato bueno conocido, marcado como caché.
+
+    Devuelve (snapshot_a_mostrar, es_cache). snapshot_a_mostrar es None
+    solo si NUNCA hubo un snapshot válido en esta sesión.
+    """
+    clave_cache = f"profundidad_ultimo_valido_{clave}"
+
+    if snapshot_nuevo is not None:
+        session_state[clave_cache] = snapshot_nuevo
+        return snapshot_nuevo, False
+
+    cache = session_state.get(clave_cache)
+    return cache, cache is not None
+
+
 def agregar_snapshot_historial(historial, snapshot, niveles_guardados=40, tope=40):
     """
     Guarda una versión recortada del snapshot en una lista de
@@ -254,8 +275,17 @@ def construir_heatmap_profundidad(historial, precio_actual, ancho_bucket_usd=15,
     return buckets, tiempos, matriz
 
 
-def figura_heatmap_profundidad(buckets, tiempos, matriz, precio_actual, titulo):
-    """Construye la figura Plotly del heatmap de profundidad."""
+def figura_heatmap_profundidad(buckets, tiempos, matriz, precio_actual, titulo, clave_camara="hm"):
+    """
+    Construye la figura Plotly del heatmap de profundidad.
+
+    clave_camara: valor fijo para layout.uirevision — es lo que le dice
+    a Plotly "aunque los datos cambien en el próximo refresh, esto es
+    la MISMA vista para el usuario", así conserva el zoom/pan que haya
+    hecho manualmente en vez de resetearlo cada 15s. Tiene que ser el
+    mismo string en cada rerun (por eso es un parámetro fijo, no algo
+    derivado de los datos).
+    """
 
     fig = go.Figure(
         data=go.Heatmap(
@@ -275,6 +305,7 @@ def figura_heatmap_profundidad(buckets, tiempos, matriz, precio_actual, titulo):
     )
 
     fig.update_layout(
+        uirevision=clave_camara,
         title=titulo,
         template="plotly_dark",
         paper_bgcolor="#0e1117",
