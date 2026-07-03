@@ -27,7 +27,7 @@ st.set_page_config(
 # actualizá FECHA_ULTIMA_ACTUALIZACION a mano cada vez que el CÓDIGO
 # cambie (nueva capa, fix, ajuste de UI), no cada vez que llega un
 # dato nuevo de Binance/Deribit.
-VERSION_APP = "V 0.0.7"
+VERSION_APP = "V 0.0.8"
 FECHA_ULTIMA_ACTUALIZACION = "03/07/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
 
 # ----------------------------------
@@ -4153,8 +4153,12 @@ with tab_profundidad:
     if "profundidad_historial_futures" not in st.session_state:
         st.session_state.profundidad_historial_futures = []
 
-    snapshot_spot, error_spot = md.obtener_profundidad(PROXY_URL, mercado="spot", symbol="BTCUSDT", limite=100)
-    snapshot_futures, error_futures = md.obtener_profundidad(PROXY_URL, mercado="futures", symbol="BTCUSDT", limite=100)
+    # limite=20: bajado desde 100 para reducir el weight consumido en
+    # Binance y mitigar los bans -1003 (ver docstring de obtener_profundidad
+    # en market_depth.py). El heatmap/superficie igual guarda como mucho
+    # 40 niveles por lado, así que no se pierde resolución visual real.
+    snapshot_spot, error_spot = md.obtener_profundidad(PROXY_URL, mercado="spot", symbol="BTCUSDT", limite=20)
+    snapshot_futures, error_futures = md.obtener_profundidad(PROXY_URL, mercado="futures", symbol="BTCUSDT", limite=20)
 
     metricas_spot = md.calcular_metricas_profundidad(snapshot_spot) if snapshot_spot else None
     metricas_futures = md.calcular_metricas_profundidad(snapshot_futures) if snapshot_futures else None
@@ -4162,65 +4166,63 @@ with tab_profundidad:
     md.agregar_snapshot_historial(st.session_state.profundidad_historial_spot, snapshot_spot)
     md.agregar_snapshot_historial(st.session_state.profundidad_historial_futures, snapshot_futures)
 
-    col_prof1, col_prof2 = st.columns(2)
-
     # --- SPOT ---
-    with col_prof1:
+    st.markdown("### 🔵 Spot (Binance)")
 
-        st.markdown("### 🔵 Spot (Binance)")
-
-        if snapshot_spot is None:
-            st.warning(f"No se pudo obtener profundidad spot. Detalle: {error_spot}")
-        else:
+    if snapshot_spot is None:
+        st.warning(f"No se pudo obtener profundidad spot. Detalle: {error_spot}")
+    else:
+        c_a, c_b, c_c = st.columns(3)
+        with c_a:
             st.metric("Mid price", f"${metricas_spot['mid']:,.2f}")
-            c_a, c_b = st.columns(2)
-            with c_a:
-                st.caption(f"Spread: ${metricas_spot['spread']:.2f} ({metricas_spot['spread_pct']:.3f}%)")
-            with c_b:
-                st.caption(f"Bid: {metricas_spot['vol_bid']:.2f} · Ask: {metricas_spot['vol_ask']:.2f} BTC")
+        with c_b:
+            st.caption(f"Spread: ${metricas_spot['spread']:.2f} ({metricas_spot['spread_pct']:.3f}%)")
+        with c_c:
+            st.caption(f"Bid: {metricas_spot['vol_bid']:.2f} · Ask: {metricas_spot['vol_ask']:.2f} BTC")
 
-            st.info(md.lectura_imbalance(metricas_spot))
-            st.progress(min(abs(metricas_spot["imbalance_pct"]) / 50, 1.0))
+        st.info(md.lectura_imbalance(metricas_spot))
+        st.progress(min(abs(metricas_spot["imbalance_pct"]) / 50, 1.0))
 
-            buckets_s, tiempos_s, matriz_s = md.construir_heatmap_profundidad(
-                st.session_state.profundidad_historial_spot, precio_actual, rango_pct=1.0
+        buckets_s, tiempos_s, matriz_s = md.construir_heatmap_profundidad(
+            st.session_state.profundidad_historial_spot, precio_actual, rango_pct=1.0
+        )
+        if buckets_s is not None:
+            fig_prof_spot = md.figura_superficie_profundidad(
+                buckets_s, tiempos_s, matriz_s, precio_actual, "Profundidad Spot"
             )
-            if buckets_s is not None:
-                fig_prof_spot = md.figura_heatmap_profundidad(
-                    buckets_s, tiempos_s, matriz_s, precio_actual, "Profundidad Spot"
-                )
-                st.plotly_chart(fig_prof_spot, use_container_width=True, key="fig_profundidad_spot")
-            else:
-                st.caption("Acumulando snapshots para el heatmap (esperá unos refreshes)...")
+            st.plotly_chart(fig_prof_spot, use_container_width=True, key="fig_profundidad_spot")
+        else:
+            st.caption("Acumulando snapshots para el gráfico (esperá unos refreshes)...")
+
+    st.divider()
 
     # --- FUTUROS ---
-    with col_prof2:
+    st.markdown("### 🟣 Futuros (Binance)")
 
-        st.markdown("### 🟣 Futuros (Binance)")
-
-        if snapshot_futures is None:
-            st.warning(f"No se pudo obtener profundidad de futuros. Detalle: {error_futures}")
-        else:
+    if snapshot_futures is None:
+        st.warning(f"No se pudo obtener profundidad de futuros. Detalle: {error_futures}")
+    else:
+        c_d, c_e, c_f = st.columns(3)
+        with c_d:
             st.metric("Mid price", f"${metricas_futures['mid']:,.2f}")
-            c_c, c_d = st.columns(2)
-            with c_c:
-                st.caption(f"Spread: ${metricas_futures['spread']:.2f} ({metricas_futures['spread_pct']:.3f}%)")
-            with c_d:
-                st.caption(f"Bid: {metricas_futures['vol_bid']:.2f} · Ask: {metricas_futures['vol_ask']:.2f} BTC")
+        with c_e:
+            st.caption(f"Spread: ${metricas_futures['spread']:.2f} ({metricas_futures['spread_pct']:.3f}%)")
+        with c_f:
+            st.caption(f"Bid: {metricas_futures['vol_bid']:.2f} · Ask: {metricas_futures['vol_ask']:.2f} BTC")
 
-            st.info(md.lectura_imbalance(metricas_futures))
-            st.progress(min(abs(metricas_futures["imbalance_pct"]) / 50, 1.0))
+        st.info(md.lectura_imbalance(metricas_futures))
+        st.progress(min(abs(metricas_futures["imbalance_pct"]) / 50, 1.0))
 
-            buckets_f, tiempos_f, matriz_f = md.construir_heatmap_profundidad(
-                st.session_state.profundidad_historial_futures, precio_actual, rango_pct=1.0
+        buckets_f, tiempos_f, matriz_f = md.construir_heatmap_profundidad(
+            st.session_state.profundidad_historial_futures, precio_actual, rango_pct=1.0
+        )
+        if buckets_f is not None:
+            fig_prof_futures = md.figura_superficie_profundidad(
+                buckets_f, tiempos_f, matriz_f, precio_actual, "Profundidad Futuros"
             )
-            if buckets_f is not None:
-                fig_prof_futures = md.figura_heatmap_profundidad(
-                    buckets_f, tiempos_f, matriz_f, precio_actual, "Profundidad Futuros"
-                )
-                st.plotly_chart(fig_prof_futures, use_container_width=True, key="fig_profundidad_futures")
-            else:
-                st.caption("Acumulando snapshots para el heatmap (esperá unos refreshes)...")
+            st.plotly_chart(fig_prof_futures, use_container_width=True, key="fig_profundidad_futures")
+        else:
+            st.caption("Acumulando snapshots para el gráfico (esperá unos refreshes)...")
 
     # --- LECTURA COMPARATIVA SPOT VS FUTUROS ---
     if metricas_spot and metricas_futures:
