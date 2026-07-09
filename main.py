@@ -3219,9 +3219,7 @@ with tab_dashboard:
         "Los % son pesos relativos entre las 3 categorías, no una medición directa "
         "de participación de mercado — es intuición estadística, no un hecho."
     )
-
 with tab_opciones:
-
     # Mini-candlestick reutilizando la misma figura del dashboard
     # principal (fig_overlay ya construida más arriba, con todas las
     # capas activas que el usuario haya elegido). Pedido del usuario:
@@ -3233,30 +3231,33 @@ with tab_opciones:
         config={"scrollZoom": True, "displayModeBar": True},
         key="fig_overlay_tab_opciones",
     )
-
     st.divider()
 
     resultado_bias = mb.calcular_market_bias(
-    precio_actual=precio_actual,
-    hay_absorcion=hay_absorcion,
-    detalle_absorcion=detalle_absorcion,
-    resultado_flip_local=resultado_flip_local,
-    buy_pressure=buy_pressure, sell_pressure=sell_pressure,
-    estado_velocidad=estado_velocidad,
-    funding_disponible=funding_disponible, funding_valor=funding_valor,
-    oi_disponible=oi_disponible, cambio_oi=cambio_oi,
-    tendencia_1h=tendencia_1h,
-    iman_dorado_activo=iman_dorado_activo,
-)
+        precio_actual=precio_actual,
+        hay_absorcion=hay_absorcion,
+        detalle_absorcion=detalle_absorcion,
+        resultado_flip_local=resultado_flip_local,
+        buy_pressure=buy_pressure, sell_pressure=sell_pressure,
+        estado_velocidad=estado_velocidad,
+        funding_disponible=funding_disponible, funding_valor=funding_valor,
+        oi_disponible=oi_disponible, cambio_oi=cambio_oi,
+        tendencia_1h=tendencia_1h,
+        iman_dorado_activo=iman_dorado_activo,
+    )
 
-st.metric("🧭 Market Bias", f"{resultado_bias['bias']:+d}", f"Confianza {resultado_bias['confianza']}%")
-st.info(resultado_bias["lectura"])
-with st.expander("Desglose del bias"):
-    for nombre, puntos, activo, detalle in resultado_bias["componentes"]:
-        estado = "✅" if activo else "⚠️ inactivo"
-        st.caption(f"{estado} **{nombre}**: {puntos:+.1f} pts — {detalle}")
+    st.metric(
+        "🧭 Market Bias",
+        f"{resultado_bias['bias']:+d}",
+        f"Confianza {resultado_bias['confianza']}%",
+    )
+    st.info(resultado_bias["lectura"])
 
-   
+    with st.expander("Desglose del bias"):
+        for nombre, puntos, activo, detalle in resultado_bias["componentes"]:
+            estado = "✅" if activo else "⚠️ inactivo"
+            st.caption(f"{estado} **{nombre}**: {puntos:+.1f} pts — {detalle}")
+
         
     # ----------------------------------
     # HEATMAP DE STRIKES — FORMATO BOOK DE PROFUNDIDAD (DOM)
