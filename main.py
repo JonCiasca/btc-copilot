@@ -4206,16 +4206,17 @@ with tab_profundidad:
         st.info(md.lectura_imbalance(metricas_spot))
         st.progress(min(abs(metricas_spot["imbalance_pct"]) / 50, 1.0))
 
-        buckets_s, tiempos_s, matriz_s = md.construir_heatmap_profundidad(
-            st.session_state.profundidad_historial_spot, precio_actual, rango_pct=1.0
-        )
-        if buckets_s is not None:
-            fig_prof_spot = md.figura_superficie_profundidad(
-                buckets_s, tiempos_s, matriz_s, precio_actual, "Profundidad Spot"
-            )
-            st.plotly_chart(fig_prof_spot, use_container_width=True, key="fig_profundidad_spot")
-        else:
-            st.caption("Acumulando snapshots para el gráfico (esperá unos refreshes)...")
+       buckets_s, tiempos_s, matriz_s = md.construir_heatmap_profundidad(
+    st.session_state.profundidad_historial_spot, precio_actual  # ya no hace falta pasar rango_pct: el nuevo default es ~$2500
+    )
+    if buckets_s is not None:
+    fig_prof_spot = md.figura_barras_3d_profundidad(
+        buckets_s, tiempos_s, matriz_s, precio_actual, "Profundidad Spot", clave_camara="hm3d_spot"
+    )
+    if fig_prof_spot is not None:
+        st.plotly_chart(fig_prof_spot, use_container_width=True, key="fig_profundidad_spot")
+    else:
+        st.caption("Sin celdas con volumen todavía en este rango de precio.")
 
     st.divider()
 
@@ -4236,16 +4237,6 @@ with tab_profundidad:
         st.info(md.lectura_imbalance(metricas_futures))
         st.progress(min(abs(metricas_futures["imbalance_pct"]) / 50, 1.0))
 
-        buckets_f, tiempos_f, matriz_f = md.construir_heatmap_profundidad(
-            st.session_state.profundidad_historial_futures, precio_actual, rango_pct=1.0
-        )
-        if buckets_f is not None:
-            fig_prof_futures = md.figura_superficie_profundidad(
-                buckets_f, tiempos_f, matriz_f, precio_actual, "Profundidad Futuros"
-            )
-            st.plotly_chart(fig_prof_futures, use_container_width=True, key="fig_profundidad_futures")
-        else:
-            st.caption("Acumulando snapshots para el gráfico (esperá unos refreshes)...")
 
     # --- LECTURA COMPARATIVA SPOT VS FUTUROS ---
     if metricas_spot and metricas_futures:
