@@ -48,14 +48,23 @@ FECHA_ULTIMA_ACTUALIZACION = "08/07/2026"  # dd/mm/aaaa — actualizar a mano en
 #
 # CICLOS_ARRANQUE: cuántos refreshes rápidos toleramos antes de pasar
 # a tratar un fallo como error real (no como "todavía conectando").
-CICLOS_ARRANQUE = 4
+#
+# FIX (recalibración tras bans -1003 repetidos): antes eran 4 ciclos a
+# 5s -- si varias sesiones nuevas (varios testers, o varias pestañas)
+# entraban en esta ventana al mismo tiempo, la ráfaga conjunta sobre
+# la misma IP del proxy alcanzaba para gatillar el ban de peso incluso
+# con el cache del proxy ya puesto. Bajado a 2 ciclos a 8s: sigue
+# resolviendo el caso real que motivó esto (proxy de Render dormido
+# tarda en responder al abrir la app por primera vez) sin necesitar
+# refrescos tan agresivos.
+CICLOS_ARRANQUE = 2
 
 if "ciclos_transcurridos" not in st.session_state:
     st.session_state.ciclos_transcurridos = 0
 
 en_periodo_arranque = st.session_state.ciclos_transcurridos < CICLOS_ARRANQUE
 
-intervalo_refresh = 5000 if en_periodo_arranque else 15000
+intervalo_refresh = 8000 if en_periodo_arranque else 15000
 
 st_autorefresh(interval=intervalo_refresh, key="btc_refresh")
 
@@ -4144,153 +4153,30 @@ with tab_dashboard:
 with tab_profundidad:
 
     # ----------------------------------
-    # 🌊 PROFUNDIDAD DE MERCADO (order book) — spot y futuros
+    # 🌊 PROFUNDIDAD DE MERCADO (order book) — TEMPORALMENTE DESACTIVADA
     # ----------------------------------
     #
-    # Ver market_depth.py para la implementación completa. Fase 1:
-    # snapshots REST cada ~15s (mismo ciclo de refresh del dashboard),
-    # NO WebSocket todavía. Se arma un historial en session_state con
-    # el que se construye un heatmap precio x tiempo, más métricas de
-    # desequilibrio bid/ask (imbalance) para cada mercado.
+    # DESACTIVADO A PROPÓSITO (09/07/2026): esta tab agregaba 2 requests
+    # extra por refresh (/depth spot + /futures/depth) sobre la misma IP
+    # del proxy que ya venía sufriendo bans -1003 por exceso de peso.
+    # No era la causa raíz (esa era la falta de cache en klines/ticker,
+    # ya resuelta en app.py), pero se saca de circulación mientras se
+    # confirma que el fix del proxy (cache TTL + circuit breaker)
+    # estabiliza el resto del dashboard, y para retomarla desde una
+    # base más simple.
     #
-    # Objetivo de fondo (pedido del usuario): esto alimenta la lectura
-    # de "quiénes son los participantes de mercado" — el imbalance de
-    # book es presión LATENTE (órdenes puestas, no ejecutadas), un dato
-    # independiente de buy_pressure/sell_pressure (que mide taker real
-    # ejecutado) y de OI/funding (posicionamiento de futuros). Cuantas
-    # más fuentes independientes coincidan, más peso estadístico — mismo
-    # criterio que ya usa Imán Dorado con Spot-liquidez/Wall/Régimen.
+    # El código completo de la implementación (heatmap, imbalance,
+    # comparación spot vs futuros) sigue intacto en market_depth.py y
+    # en tab_profundidad_backup.txt (respaldo del bloque que iba acá) —
+    # no se perdió nada, solo se dejó de EJECUTAR. Para reactivarla,
+    # pegar el contenido de ese backup en este bloque.
 
     st.subheader("🌊 Profundidad de Mercado — Spot vs Futuros")
-
-    st.caption(
-        "⚠️ Fase 1 (REST snapshot, no WebSocket todavía): cada foto del book se toma "
-        "cada ~15s junto con el resto del dashboard. Entre una foto y la siguiente, "
-        "órdenes grandes pueden aparecer y desaparecer sin quedar registradas "
-        "(spoofing típico, sobre todo en futuros). Es un proxy de contexto, no un "
-        "reemplazo de un feed de depth incremental en vivo."
-    )
-
-    if "profundidad_historial_spot" not in st.session_state:
-        st.session_state.profundidad_historial_spot = []
-    if "profundidad_historial_futures" not in st.session_state:
-        st.session_state.profundidad_historial_futures = []
-
-    # limite=20: bajado desde 100 para reducir el weight consumido en
-    # Binance y mitigar los bans -1003 (ver docstring de obtener_profundidad
-    # en market_depth.py). El heatmap/superficie igual guarda como mucho
-    # 40 niveles por lado, así que no se pierde resolución visual real.
-    snapshot_spot, error_spot = md.obtener_profundidad(PROXY_URL, mercado="spot", symbol="BTCUSDT", limite=20)
-    snapshot_futures, error_futures = md.obtener_profundidad(PROXY_URL, mercado="futures", symbol="BTCUSDT", limite=20)
-
-    metricas_spot = md.calcular_metricas_profundidad(snapshot_spot) if snapshot_spot else None
-    metricas_futures = md.calcular_metricas_profundidad(snapshot_futures) if snapshot_futures else None
-
-    md.agregar_snapshot_historial(st.session_state.profundidad_historial_spot, snapshot_spot)
-    md.agregar_snapshot_historial(st.session_state.profundidad_historial_futures, snapshot_futures)
-
-    # --- SPOT ---
-    st.markdown("### 🔵 Spot (Binance)")
-
-    if snapshot_spot is None:
-        st.warning(f"No se pudo obtener profundidad spot. Detalle: {error_spot}")
-    else:
-        c_a, c_b, c_c = st.columns(3)
-        with c_a:
-            st.metric("Mid price", f"${metricas_spot['mid']:,.2f}")
-        with c_b:
-            st.caption(f"Spread: ${metricas_spot['spread']:.2f} ({metricas_spot['spread_pct']:.3f}%)")
-        with c_c:
-            st.caption(f"Bid: {metricas_spot['vol_bid']:.2f} · Ask: {metricas_spot['vol_ask']:.2f} BTC")
-
-        st.info(md.lectura_imbalance(metricas_spot))
-        st.progress(min(abs(metricas_spot["imbalance_pct"]) / 50, 1.0))
-        buckets_s, tiempos_s, matriz_s = md.construir_heatmap_profundidad(
-    st.session_state.profundidad_historial_spot, precio_actual  # ya no hace falta pasar rango_pct: el nuevo default es ~$2500
-)
-if buckets_s is not None:
-    fig_prof_spot = md.figura_barras_3d_profundidad(
-        buckets_s, tiempos_s, matriz_s, precio_actual, "Profundidad Spot", clave_camara="hm3d_spot"
-    )
-    if fig_prof_spot is not None:
-        st.plotly_chart(fig_prof_spot, use_container_width=True, key="fig_profundidad_spot")
-    else:
-        st.caption("Sin celdas con volumen todavía en este rango de precio.")
-
-   
-    st.divider()
-
-    # --- FUTUROS ---
-    st.markdown("### 🟣 Futuros (Binance)")
-
-    if snapshot_futures is None:
-        st.warning(f"No se pudo obtener profundidad de futuros. Detalle: {error_futures}")
-    else:
-        c_d, c_e, c_f = st.columns(3)
-        with c_d:
-            st.metric("Mid price", f"${metricas_futures['mid']:,.2f}")
-        with c_e:
-            st.caption(f"Spread: ${metricas_futures['spread']:.2f} ({metricas_futures['spread_pct']:.3f}%)")
-        with c_f:
-            st.caption(f"Bid: {metricas_futures['vol_bid']:.2f} · Ask: {metricas_futures['vol_ask']:.2f} BTC")
-
-        st.info(md.lectura_imbalance(metricas_futures))
-        st.progress(min(abs(metricas_futures["imbalance_pct"]) / 50, 1.0))
-
-    buckets_s, tiempos_s, matriz_s = md.construir_heatmap_profundidad(
-    st.session_state.profundidad_historial_spot, precio_actual  # ya no hace falta pasar rango_pct: el nuevo default es ~$2500
-)
-if buckets_s is not None:
-    fig_prof_spot = md.figura_barras_3d_profundidad(
-        buckets_s, tiempos_s, matriz_s, precio_actual, "Profundidad futures", clave_camara="hm3d_futures"
-    )
-    if fig_prof_spot is not None:
-        st.plotly_chart(fig_prof_spot, use_container_width=True, key="fig_profundidad_futures")
-    else:
-        st.caption("Sin celdas con volumen todavía en este rango de precio.")
-
-
-    # --- LECTURA COMPARATIVA SPOT VS FUTUROS ---
-    if metricas_spot and metricas_futures:
-
-        st.divider()
-        st.subheader(
-            "🔎 Lectura comparativa Spot vs Futuros",
-            help=(
-                "Si el imbalance de spot y futuros apuntan en la MISMA dirección, "
-                "hay confluencia entre el mercado que liquida en cripto real y el "
-                "apalancado — lectura más robusta. Si divergen, suele ser apalancamiento "
-                "especulativo empujando en una dirección mientras el flujo real (spot) "
-                "no acompaña — más riesgo de reversión brusca (liquidación en cascada)."
-            ),
-        )
-
-        imb_spot = metricas_spot["imbalance_pct"]
-        imb_fut = metricas_futures["imbalance_pct"]
-
-        mismo_signo = (imb_spot > 0 and imb_fut > 0) or (imb_spot < 0 and imb_fut < 0)
-
-        if mismo_signo and abs(imb_spot) > 8 and abs(imb_fut) > 8:
-            direccion = "comprador" if imb_spot > 0 else "vendedor"
-            st.success(
-                f"🟢 Confluencia {direccion}: spot ({imb_spot:+.1f}%) y futuros ({imb_fut:+.1f}%) "
-                f"apuntan al mismo lado — presión latente más robusta, no es solo apalancamiento."
-            )
-        elif not mismo_signo and abs(imb_spot) > 5 and abs(imb_fut) > 5:
-            st.warning(
-                f"🟡 Divergencia: spot ({imb_spot:+.1f}%) vs futuros ({imb_fut:+.1f}%) van en "
-                f"direcciones opuestas — probable posicionamiento especulativo/apalancado sin "
-                f"acompañamiento del flujo spot real. Mayor riesgo de reversión si se liquida."
-            )
-        else:
-            st.info("⚪ Sin señal fuerte en ninguno de los dos books en este momento.")
-
-    st.divider()
-    st.caption(
-        "⚠️ Roadmap: migrar de snapshots REST a WebSocket (diffDepth stream) para book "
-        "en vivo real, y sumar trade-tape (aggTrade) para ver tamaño/agresor de cada "
-        "operación ejecutada sobre el heatmap — pendiente de código fuente del proxy "
-        "en Render para agregar el relay WS."
+    st.info(
+        "🔧 Esta sección está temporalmente desactivada mientras se estabiliza "
+        "el proxy (evita requests extra a Binance mientras se confirma que el "
+        "fix de cache/rate-limit está funcionando). Va a volver a activarse "
+        "en un próximo update."
     )
 
 # ----------------------------------
