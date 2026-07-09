@@ -3254,7 +3254,7 @@ with tab_opciones:
 with st.expander("Desglose del bias"):
     for nombre, puntos, activo, detalle in resultado_bias["componentes"]:
         estado = "✅" if activo else "⚠️ inactivo"
-    st.caption(f"{estado} **{nombre}**: {puntos:+.1f} pts — {detalle}")
+st.caption(f"{estado} **{nombre}**: {puntos:+.1f} pts — {detalle}")
 
    
         
