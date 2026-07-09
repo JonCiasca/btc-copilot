@@ -3220,26 +3220,14 @@ with tab_dashboard:
         "de participación de mercado — es intuición estadística, no un hecho."
     )
 
-with tab_opciones:
+    with tab_opciones:
 
     st.plotly_chart(...)
 
     st.divider()
 
     resultado_bias = mb.calcular_market_bias(
-        precio_actual=precio_actual,
-        hay_absorcion=hay_absorcion,
-        detalle_absorcion=detalle_absorcion,
-        resultado_flip_local=resultado_flip_local,
-        buy_pressure=buy_pressure,
-        sell_pressure=sell_pressure,
-        estado_velocidad=estado_velocidad,
-        funding_disponible=funding_disponible,
-        funding_valor=funding_valor,
-        oi_disponible=oi_disponible,
-        cambio_oi=cambio_oi,
-        tendencia_1h=tendencia_1h,
-        iman_dorado_activo=iman_dorado_activo,
+        ...
     )
 
     st.metric(
@@ -3256,10 +3244,6 @@ with tab_opciones:
             st.caption(
                 f"{estado} **{nombre}**: {puntos:+.1f} pts — {detalle}"
             )
-
-
-    
-
 
         
     # ----------------------------------
