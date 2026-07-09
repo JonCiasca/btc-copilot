@@ -240,7 +240,7 @@ def agregar_snapshot_historial(historial, snapshot, niveles_guardados=40, tope=4
 # HEATMAP DE PROFUNDIDAD (precio x tiempo)
 # ----------------------------------
 
-def construir_heatmap_profundidad(historial, precio_actual, ancho_bucket_usd=15, rango_pct=1.0):
+def construir_heatmap_profundidad(historial, precio_actual, ancho_bucket_usd=20, rango_pct=2.0):
     """
     Arma una matriz [bucket_de_precio x snapshot_en_el_tiempo] con el
     tamaño acumulado en cada celda. Bids con signo POSITIVO, asks con
@@ -249,6 +249,15 @@ def construir_heatmap_profundidad(historial, precio_actual, ancho_bucket_usd=15,
 
     Devuelve (buckets, tiempos, matriz) o (None, None, None) si no hay
     historial todavía.
+
+    Defaults recalibrados (pedido del usuario, referencia visual tipo
+    Bookmap): antes rango_pct=1.0 daba solo ~$640 de ancho total a
+    precios de BTC ~64,000 — muy angosto para ver estructura de book
+    real. Ahora rango_pct=2.0 da ~$2,500 de ancho total (±$1,250 sobre
+    el precio actual), y ancho_bucket_usd sube a 20 para compensar:
+    sin esto, el rango más ancho multiplicaría por ~3 la cantidad de
+    buckets, y por lo tanto la cantidad de barras 3D a renderizar
+    (ver figura_barras_3d_profundidad más abajo).
     """
 
     if not historial:
@@ -359,6 +368,128 @@ def figura_superficie_profundidad(buckets, tiempos, matriz, precio_actual, titul
             camera=dict(eye=dict(x=1.6, y=-1.6, z=0.9)),
         ),
         height=480,
+        margin=dict(l=0, r=0, t=40, b=0),
+    )
+
+    return fig
+
+
+def figura_barras_3d_profundidad(
+    buckets, tiempos, matriz, precio_actual, titulo,
+    clave_camara="hm3d", ancho_barra=0.9,
+):
+    """
+    Terreno de PROFUNDIDAD como barras extruidas (voxels de aristas
+    duras), en vez del go.Surface suavizado de figura_superficie_
+    profundidad — pedido explícito del usuario para acercarse a la
+    estética tipo Bookmap (barras cuadradas por celda precio x tiempo,
+    no una malla continua interpolada).
+
+    CÓMO SE CONSTRUYE (vectorizado con NumPy, no un loop por celda):
+    cada celda (bucket_de_precio, snapshot_de_tiempo) se convierte en
+    un cubo (Mesh3d) que va desde z=0 hasta z=valor de la celda (bids
+    positivos hacia arriba, asks negativos hacia abajo, mismo criterio
+    de signo que el resto del módulo). Se arman TODOS los vértices y
+    TODAS las caras de una sola vez con arrays de NumPy — con hasta
+    ~100 buckets x 40 snapshots (400 celdas) esto da unos miles de
+    triángulos, manejable para Plotly/WebGL en el navegador.
+
+    Solo se dibujan celdas con volumen != 0 (no hace falta un cubo de
+    altura cero) — esto además dejar ver "huecos" reales en el book,
+    que es información honesta (ausencia de órdenes en ese nivel/
+    momento), no un artefacto visual.
+
+    intensity: mismo valor de la celda repetido en sus 8 vértices, con
+    el mismo colorscale divergente rojo/verde del resto del módulo —
+    así el color de cada barra es uniforme (no interpolado con las
+    barras vecinas, a diferencia del Surface).
+
+    clave_camara / ancho_barra: ver figura_heatmap_profundidad para el
+    propósito de uirevision (conservar el zoom/pan manual entre
+    refreshes). ancho_barra < 1.0 deja un pequeño espacio entre barras
+    en el eje de tiempo, como en la referencia visual.
+
+    Devuelve una go.Figure, o None si la matriz no tiene ninguna celda
+    con datos (nada que dibujar).
+    """
+
+    if matriz is None or matriz.size == 0:
+        return None
+
+    n_y, n_x = matriz.shape  # n_y = buckets de precio, n_x = snapshots
+
+    idx_y, idx_x = np.nonzero(matriz)
+
+    if len(idx_y) == 0:
+        return None
+
+    valores = matriz[idx_y, idx_x]
+    n_boxes = len(valores)
+
+    # --- límites de cada caja en X (tiempo) e Y (precio) ---
+    ancho_bucket = buckets[1] - buckets[0] if len(buckets) > 1 else 1.0
+
+    x0 = idx_x - ancho_barra / 2
+    x1 = idx_x + ancho_barra / 2
+    y_centro = buckets[idx_y]
+    y0 = y_centro - ancho_bucket * ancho_barra / 2
+    y1 = y_centro + ancho_bucket * ancho_barra / 2
+    z0 = np.minimum(0.0, valores)
+    z1 = np.maximum(0.0, valores)
+
+    # --- 8 vértices por caja, vectorizado (shape: n_boxes x 8) ---
+    vx = np.stack([x0, x1, x1, x0, x0, x1, x1, x0], axis=1)
+    vy = np.stack([y0, y0, y1, y1, y0, y0, y1, y1], axis=1)
+    vz = np.stack([z0, z0, z0, z0, z1, z1, z1, z1], axis=1)
+
+    x_flat = vx.reshape(-1)
+    y_flat = vy.reshape(-1)
+    z_flat = vz.reshape(-1)
+
+    # --- 12 triángulos por caja (2 por cara x 6 caras), offset por caja ---
+    base_i = np.array([0, 0, 4, 4, 0, 0, 3, 3, 0, 0, 1, 1])
+    base_j = np.array([1, 2, 5, 6, 1, 5, 2, 6, 3, 7, 2, 6])
+    base_k = np.array([2, 3, 6, 7, 5, 4, 6, 7, 7, 4, 6, 5])
+
+    offsets = (np.arange(n_boxes) * 8)[:, None]
+    I = (base_i[None, :] + offsets).reshape(-1)
+    J = (base_j[None, :] + offsets).reshape(-1)
+    K = (base_k[None, :] + offsets).reshape(-1)
+
+    # Mismo valor de la celda repetido en sus 8 vértices -> color uniforme
+    # por barra (no interpolado con las vecinas).
+    intensidad = np.repeat(valores, 8)
+    limite_color = float(np.max(np.abs(valores))) or 1.0
+
+    fig = go.Figure(
+        data=go.Mesh3d(
+            x=x_flat, y=y_flat, z=z_flat,
+            i=I, j=J, k=K,
+            intensity=intensidad,
+            colorscale=[[0.0, "#ef4444"], [0.5, "#12151c"], [1.0, "#22c55e"]],
+            cmin=-limite_color, cmax=limite_color,
+            flatshading=True,
+            lighting=dict(ambient=0.55, diffuse=0.7, specular=0.25, roughness=0.6),
+            showscale=False,
+            hovertemplate="tamaño neto: %{intensity:.2f}<extra></extra>",
+        )
+    )
+
+    fig.update_layout(
+        uirevision=clave_camara,
+        title=titulo,
+        template="plotly_dark",
+        paper_bgcolor="#0e1117",
+        scene=dict(
+            xaxis_title="snapshots recientes →",
+            yaxis_title="precio (USD)",
+            zaxis_title="tamaño (ask ⟵ ⟶ bid)",
+            bgcolor="#0e1117",
+            camera=dict(eye=dict(x=1.7, y=-1.7, z=0.85)),
+            aspectmode="manual",
+            aspectratio=dict(x=1.6, y=1.0, z=0.5),
+        ),
+        height=520,
         margin=dict(l=0, r=0, t=40, b=0),
     )
 
