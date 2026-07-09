@@ -3247,7 +3247,7 @@ with tab_opciones:
     oi_disponible=oi_disponible, cambio_oi=cambio_oi,
     tendencia_1h=tendencia_1h,
     iman_dorado_activo=iman_dorado_activo,
-        
+    )        
 
     st.metric("🧭 Market Bias", f"{resultado_bias['bias']:+d}", f"Confianza {resultado_bias['confianza']}%")
     st.info(resultado_bias["lectura"])
@@ -3255,7 +3255,7 @@ with tab_opciones:
     for nombre, puntos, activo, detalle in resultado_bias["componentes"]:
         estado = "✅" if activo else "⚠️ inactivo"
         st.caption(f"{estado} **{nombre}**: {puntos:+.1f} pts — {detalle}")
-)
+
    
         
     # ----------------------------------
