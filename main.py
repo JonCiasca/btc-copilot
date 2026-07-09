@@ -3220,7 +3220,7 @@ with tab_dashboard:
         "de participación de mercado — es intuición estadística, no un hecho."
     )
 
-with tab_opciones:
+    with tab_opciones:
 
     st.plotly_chart(...)
 
@@ -3257,6 +3257,8 @@ with tab_opciones:
                 f"{estado} **{nombre}**: {puntos:+.1f} pts — {detalle}"
             )
 
+
+    
 
 
         
