@@ -3251,7 +3251,7 @@ with tab_opciones:
 
     st.metric("🧭 Market Bias", f"{resultado_bias['bias']:+d}", f"Confianza {resultado_bias['confianza']}%")
     st.info(resultado_bias["lectura"])
-    with st.expander("Desglose del bias"):
+with st.expander("Desglose del bias"):
     for nombre, puntos, activo, detalle in resultado_bias["componentes"]:
         estado = "✅" if activo else "⚠️ inactivo"
     st.caption(f"{estado} **{nombre}**: {puntos:+.1f} pts — {detalle}")
