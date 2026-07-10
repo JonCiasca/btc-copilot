@@ -1197,6 +1197,74 @@ def encontrar_wall(instrumentos, tipo, spot_actual, ahora, vencimientos_permitid
     }
 
 
+def calcular_gamma_pinning(instrumentos, vencimiento_objetivo=None):
+    """
+    GAMMA PINNING (o "Max Pain"): el precio de cierre hipotético donde el
+    valor total pagado a los TENEDORES de opciones (calls + puts, sumando
+    su valor intrínseco x OI) sería MÍNIMO. Es, por construcción, el precio
+    donde los vendedores netos de opciones (los dealers) menos pierden si
+    el mercado cerrara ahí mismo.
+
+    Distinto del Flip Point / GEX: el Flip mira el RÉGIMEN de hedging
+    (long/short gamma) usando Black-Scholes; el pinning mira directamente
+    el OI de calls y puts, sin gamma ni IV — es un cálculo mucho más simple
+    y es específico de UN vencimiento puntual (no tiene sentido "agregar"
+    varios vencimientos como en el Flip Global, porque cada expiración paga
+    su propio valor intrínseco por separado el día que vence).
+
+    Efecto de mercado esperado: a medida que se acerca la hora de cierre de
+    ESE vencimiento, el hedging de los dealers tiende a "clavar" (pin) el
+    precio hacia este strike — el efecto es más marcado en las horas
+    previas a la expiración semanal, y prácticamente irrelevante si faltan
+    varios días. Esto NO es una garantía ni una señal de entrada, es un
+    imán estadístico documentado en el mercado de opciones.
+
+    vencimiento_objetivo: datetime del vencimiento a usar. Si es None, se
+    usa automáticamente el vencimiento MÁS PRÓXIMO entre los instrumentos
+    recibidos (el pinning es más relevante cuanto más cerca está de vencer).
+
+    Devuelve None si no hay datos suficientes, o un dict con:
+      strike_pin, dolor_min, vencimiento_usado, curva (lista de (strike, dolor_total))
+    """
+
+    if not instrumentos:
+        return None
+
+    if vencimiento_objetivo is None:
+        vencimiento_objetivo = min(inst["vencimiento"] for inst in instrumentos)
+
+    filtrados = [i for i in instrumentos if i["vencimiento"] == vencimiento_objetivo]
+
+    if not filtrados:
+        return None
+
+    strikes = sorted(set(i["strike"] for i in filtrados))
+    strikes_arr = np.array(strikes, dtype=np.float64)
+
+    calls = [(i["strike"], i["oi"]) for i in filtrados if i["tipo"] == "call"]
+    puts = [(i["strike"], i["oi"]) for i in filtrados if i["tipo"] == "put"]
+
+    if not calls and not puts:
+        return None
+
+    dolor_total = np.zeros(len(strikes_arr))
+
+    for k, oi in calls:
+        dolor_total += np.maximum(strikes_arr - k, 0) * oi
+    for k, oi in puts:
+        dolor_total += np.maximum(k - strikes_arr, 0) * oi
+
+    idx_min = int(np.argmin(dolor_total))
+
+    curva = list(zip(strikes_arr.tolist(), dolor_total.tolist()))
+
+    return {
+        "strike_pin": float(strikes_arr[idx_min]),
+        "dolor_min": float(dolor_total[idx_min]),
+        "vencimiento_usado": vencimiento_objetivo,
+        "curva": curva,
+    }
+
 def calcular_flip(instrumentos, spot_actual, vencimiento_max=None, rango_pct=0.15, pasos=61, ponderar_por_tiempo=False):
     """
     Calcula el flip point (cruce de signo del GEX) usando solo los
@@ -1992,6 +2060,7 @@ with tab_dashboard:
     zona_gamma_hi = None
     zona_gamma_lo = None
     vencimiento_local_dt = None
+    resultado_gamma_pinning = None
 
     if deribit_disponible:
 
@@ -2089,6 +2158,7 @@ with tab_dashboard:
             instrumentos_deribit, "put", precio_actual, ahora,
             vencimientos_permitidos=vencimientos_global,
         )
+        resultado_gamma_pinning = calcular_gamma_pinning(instrumentos_deribit)
 
         if resultado_flip_global:
             zona_gamma_hi, zona_gamma_lo = detectar_zonas_gamma_local(
@@ -2290,6 +2360,8 @@ with tab_dashboard:
         niveles_para_iman_dorado.append(("Opciones-Régimen", zona_gamma_hi["precio"]))
     if zona_gamma_lo:
         niveles_para_iman_dorado.append(("Opciones-Régimen", zona_gamma_lo["precio"]))
+    if resultado_gamma_pinning:
+        niveles_para_iman_dorado.append(("Opciones-Pinning", resultado_gamma_pinning["strike_pin"]))
 
     iman_dorado_grupos = _detectar_iman_dorado(
         niveles_para_iman_dorado, precio_actual, tolerancia_pct=TOLERANCIA_IMAN_DORADO_PCT
@@ -2309,8 +2381,10 @@ with tab_dashboard:
             "GAMMA_ZONE": False,
             "WALLS": False,
             "ABSORB": True,
+            "PINNING": True,
         }
     st.session_state.capas_activas.setdefault("IMAN_DORADO", True)
+    st.session_state.capas_activas.setdefault("PINNING", True)
     # Migración: si quedó guardada una sesión vieja con la clave "FLIP"
     # unificada, la separamos para no romper el estado de quien ya tenía
     # el dashboard abierto antes de este cambio.
@@ -2321,7 +2395,7 @@ with tab_dashboard:
 
     st.markdown("**Capas sobre el gráfico**")
 
-    b1, b2, b3, b4, b5, b6, b7 = st.columns(7)
+    b1, b2, b3, b4, b5, b6, b7, b8 = st.columns(7)
 
     with b1:
         st.session_state.capas_activas["IMAN"] = st.toggle(
@@ -2358,6 +2432,21 @@ with tab_dashboard:
     with b7:
         st.session_state.capas_activas["ABSORB"] = st.toggle(
             "🧊 ABSORB", value=st.session_state.capas_activas["ABSORB"], key="cap_absorb"
+        )
+    with b8:
+        st.session_state.capas_activas["PINNING"] = st.toggle(
+            "🎯 PINNING", value=st.session_state.capas_activas["PINNING"], key="cap_pinning",
+            help=(
+                "**Gamma Pinning (Max Pain):** el precio de cierre donde el valor total "
+                "pagado a los tenedores de opciones (calls + puts, valor intrínseco x OI) "
+                "sería MÍNIMO — el punto donde los vendedores netos de opciones (dealers) "
+                "menos pierden si el mercado cerrara ahí.\n\n"
+                "Distinto del Flip/Gamma Zone: no usa Black-Scholes ni IV, solo el OI real "
+                "de cada strike del vencimiento MÁS PRÓXIMO. El efecto de 'clavar' el precio "
+                "hacia este nivel se vuelve más fuerte en las horas previas a esa expiración, "
+                "y casi irrelevante si faltan varios días — no es una señal de entrada, es un "
+                "imán estadístico documentado del mercado de opciones."
+            )
         )
 
     capas = st.session_state.capas_activas
@@ -2492,7 +2581,17 @@ with tab_dashboard:
                 "#10b981", "rgba(16,185,129,0.28)",
                 dash="dashdot"
             )
-
+    # --- Capa PINNING (Gamma Pinning / Max Pain del vencimiento más próximo) ---
+    if capas["PINNING"] and deribit_disponible and resultado_gamma_pinning:
+        strike_pin = resultado_gamma_pinning["strike_pin"]
+        dist_pin = ((strike_pin - precio_actual) / precio_actual) * 100
+        venc_pin_txt = resultado_gamma_pinning["vencimiento_usado"].strftime("%d-%b")
+        _etiqueta_overlay(
+            fig_overlay, strike_pin,
+            f"🎯 PIN ${strike_pin:,.0f} ({dist_pin:+.1f}%, {venc_pin_txt})",
+            "#facc15", "rgba(250,204,21,0.28)",
+            dash="dashdot",
+        )
     # --- Capa WALLS (Call Wall / Put Wall) ---
     if capas["WALLS"] and deribit_disponible:
 
@@ -3710,7 +3809,30 @@ with tab_opciones:
                 )
             else:
                 st.caption("Sin datos suficientes de puts en Deribit para esta ventana.")
+        st.subheader(
+            "🎯 Gamma Pinning (Max Pain)",
+            help=(
+                "Precio de cierre hipotético donde el OI de calls+puts del vencimiento "
+                "más próximo generaría el MENOR pago total a los tenedores de opciones. "
+                "El hedging de dealers tiende a acercar el precio hacia acá cuanto más "
+                "cerca esté la expiración — efecto marginal si faltan varios días."
+            ),
+        )
 
+        if resultado_gamma_pinning:
+            dist_pin = ((resultado_gamma_pinning["strike_pin"] - precio_actual) / precio_actual) * 100
+            st.info(
+                f"""
+**Strike de pinning:** ${resultado_gamma_pinning['strike_pin']:,.0f}
+**Distancia al precio actual:** {dist_pin:+.2f}%
+**Vencimiento usado:** {resultado_gamma_pinning['vencimiento_usado'].strftime('%d-%b-%Y')}
+"""
+            )
+        else:
+            st.caption("Sin datos suficientes en el vencimiento más próximo para calcular pinning.")
+
+        st.divider()
+        
         col_f1, col_f2 = st.columns(2)
 
         with col_f1:
