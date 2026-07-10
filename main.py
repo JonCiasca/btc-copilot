@@ -405,7 +405,12 @@ def obtener_funding():
         data = respuesta.json()
         if "lastFundingRate" not in data:
             st.session_state["error_funding"] = data.get("error", str(data))
+            if data.get("code") == -1003:
+                st.session_state["ban_restante_futures"] = data.get("ban_restante_segundos", 0)
+            else:
+                st.session_state.pop("ban_restante_futures", None)
             return None
+        st.session_state.pop("ban_restante_futures", None)
         return float(data["lastFundingRate"]) * 100
     except Exception as e:
         st.session_state["error_funding"] = str(e)
@@ -414,12 +419,16 @@ def obtener_funding():
 
 def obtener_open_interest():
     """Pide el Open Interest de Binance Futures vía nuestro proxy en Render."""
-
     try:
         url = f"{PROXY_URL}/openInterest?symbol=BTCUSDT"
-        data = requests.get(url, timeout=10).json()
+        respuesta = requests.get(url, timeout=10)
+        data = respuesta.json()
+        if "openInterest" not in data:
+            if data.get("code") == -1003:
+                st.session_state["ban_restante_futures"] = data.get("ban_restante_segundos", 0)
+            return None
+        st.session_state.pop("ban_restante_futures", None)
         return float(data["openInterest"])
-
     except Exception:
         return None
     
@@ -2395,7 +2404,7 @@ with tab_dashboard:
 
     st.markdown("**Capas sobre el gráfico**")
 
-    b1, b2, b3, b4, b5, b6, b7, b8 = st.columns(8)
+    b1, b2, b3, b4, b5, b6, b7, b8 = st.columns(7)
 
     with b1:
         st.session_state.capas_activas["IMAN"] = st.toggle(
@@ -3030,6 +3039,11 @@ with tab_dashboard:
                 st.caption("⏳ Último dato conocido, este refresh no pudo actualizar.")
         else:
             st.metric("Funding", "N/D")
+            ban_restante = st.session_state.get("ban_restante_futures")
+            if ban_restante:
+                minutos = ban_restante // 60
+                segundos = ban_restante % 60
+                st.caption(f"⏳ Cooldown activo por rate-limit de Binance — vuelve en ~{minutos}m {segundos}s.")
         # =============================================
         # OPEN INTEREST — BINANCE Y BYBIT POR SEPARADO
         # =============================================
@@ -3832,7 +3846,7 @@ with tab_opciones:
             st.caption("Sin datos suficientes en el vencimiento más próximo para calcular pinning.")
 
         st.divider()
-        
+
         col_f1, col_f2 = st.columns(2)
 
         with col_f1:
