@@ -8,7 +8,6 @@ import math
 import json
 import os
 from datetime import datetime, timezone
-import market_depth as md
 import market_bias as mb
 
 # ----------------------------------
@@ -173,8 +172,8 @@ if es_admin:
 
 st.title("📈 BTC Copilot by JonFlow-MDQ")
 
-tab_dashboard, tab_opciones, tab_profundidad = st.tabs(
-    ["📊 Dashboard", "📐 Opciones / Derivados", "🌊 Profundidad de Mercado"]
+tab_dashboard, tab_opciones = st.tabs(
+    ["📊 Dashboard", "📐 Opciones / Derivados"]
 )
 
 with tab_dashboard:
@@ -4285,35 +4284,6 @@ with tab_dashboard:
         "siempre la confirmación real del mercado antes de actuar — los niveles "
         "proyectados (Flip, Walls, Imán, Absorción) son zonas de mayor probabilidad "
         "estadística, no garantías de reacción del precio."
-    )
-
-with tab_profundidad:
-
-    # ----------------------------------
-    # 🌊 PROFUNDIDAD DE MERCADO (order book) — TEMPORALMENTE DESACTIVADA
-    # ----------------------------------
-    #
-    # DESACTIVADO A PROPÓSITO (09/07/2026): esta tab agregaba 2 requests
-    # extra por refresh (/depth spot + /futures/depth) sobre la misma IP
-    # del proxy que ya venía sufriendo bans -1003 por exceso de peso.
-    # No era la causa raíz (esa era la falta de cache en klines/ticker,
-    # ya resuelta en app.py), pero se saca de circulación mientras se
-    # confirma que el fix del proxy (cache TTL + circuit breaker)
-    # estabiliza el resto del dashboard, y para retomarla desde una
-    # base más simple.
-    #
-    # El código completo de la implementación (heatmap, imbalance,
-    # comparación spot vs futuros) sigue intacto en market_depth.py y
-    # en tab_profundidad_backup.txt (respaldo del bloque que iba acá) —
-    # no se perdió nada, solo se dejó de EJECUTAR. Para reactivarla,
-    # pegar el contenido de ese backup en este bloque.
-
-    st.subheader("🌊 Profundidad de Mercado — Spot vs Futuros")
-    st.info(
-        "🔧 Esta sección está temporalmente desactivada mientras se estabiliza "
-        "el proxy (evita requests extra a Binance mientras se confirma que el "
-        "fix de cache/rate-limit está funcionando). Va a volver a activarse "
-        "en un próximo update."
     )
 
 # ----------------------------------
