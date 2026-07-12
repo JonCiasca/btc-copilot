@@ -1,6 +1,7 @@
-streamlit
-streamlit-autorefresh
-requests
-pandas
-numpy
-plotly
+streamlit==1.39.0
+streamlit-autorefresh==1.0.1
+requests==2.32.3
+pandas==2.2.3
+numpy==1.26.4
+plotly==5.24.1
+pyarrow==17.0.0
