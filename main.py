@@ -15,7 +15,7 @@ import market_bias as mb
 # ----------------------------------
 
 st.set_page_config(
-    page_title="BTC. Copilot by JONFLOW-MDQ",
+    page_title="BTC Copilot by JONFLOW-MDQ",
     page_icon="📈",
     layout="wide"
 )
