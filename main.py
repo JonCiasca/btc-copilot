@@ -9,6 +9,7 @@ import json
 import os
 from datetime import datetime, timezone
 import market_bias as mb
+import market_projection as mproj
 
 # ----------------------------------
 # CONFIG
@@ -27,8 +28,8 @@ st.set_page_config(
 # actualizá FECHA_ULTIMA_ACTUALIZACION a mano cada vez que el CÓDIGO
 # cambie (nueva capa, fix, ajuste de UI), no cada vez que llega un
 # dato nuevo de Binance/Deribit.
-VERSION_APP = "V 0.1.0"
-FECHA_ULTIMA_ACTUALIZACION = "10/07/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
+VERSION_APP = "V 0.1.1"
+FECHA_ULTIMA_ACTUALIZACION = "12/07/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
 
 # ----------------------------------
 # REFRESH DINÁMICO AL ARRANQUE
@@ -2058,6 +2059,13 @@ with tab_dashboard:
 
     precio_actual = df["close"].iloc[-1]
 
+    # FIX: "ahora" se usaba antes solo adentro del if deribit_disponible.
+    # Se define acá afuera, sin condición, para que esté disponible en
+    # todo el resto del script (ej. Proyección Probabilística) incluso
+    # en el ciclo en que Deribit no responde y el resto de variables de
+    # opciones queda en None.
+    ahora = datetime.now(timezone.utc)
+
     instrumentos_deribit = obtener_instrumentos_deribit()
     deribit_disponible = instrumentos_deribit is not None and len(instrumentos_deribit) > 0
 
@@ -2071,8 +2079,6 @@ with tab_dashboard:
     resultado_gamma_pinning = None
 
     if deribit_disponible:
-
-        ahora = datetime.now(timezone.utc)
 
         # FIX (calibración): Deribit mezcla en la misma lista de vencimientos
         # los semanales, mensuales y trimestrales. Tomar "los próximos 3-5
@@ -3370,7 +3376,63 @@ with tab_opciones:
             estado = "✅" if activo else "⚠️ inactivo"
             st.caption(f"{estado} **{nombre}**: {puntos:+.1f} pts — {detalle}")
 
-        
+    st.divider()
+
+    # ----------------------------------
+    # 🔮 PROYECCIÓN PROBABILÍSTICA DE MERCADO (RÉGIMEN: RANGO vs RUPTURA)
+    # ----------------------------------
+    # Pedido del usuario: catalogar Call Wall, Put Wall, Gamma Pinning y
+    # el régimen del Flip Global en un solo apartado de proyección,
+    # cruzado con Market Bias y Participantes de Mercado (ya calculados
+    # arriba). Ver market_projection.py para el detalle de cada
+    # componente y las reglas explícitas de Short Gamma (acompañar la
+    # fuerza del movimiento, nunca buscar reversión) y Pinning simétrico
+    # (mismo tratamiento arriba o abajo del precio).
+
+    st.subheader(
+        "🔮 Proyección de Régimen (Rango vs Ruptura)",
+        help=(
+            "Consolida Régimen Gamma (Flip Global), posición del precio en el "
+            "rango Put Wall–Call Wall, Gamma Pinning y la confluencia con Market "
+            "Bias + Participantes de Mercado en un solo score de -100 a +100. "
+            "Positivo favorece RANGO/CONTENCIÓN (operar extremos). Negativo "
+            "favorece RUPTURA/MOMENTUM (acompañar la fuerza del movimiento, no "
+            "buscar reversión). No es una predicción determinística — es una "
+            "lectura estadística de cuántas familias de señales, ya calculadas "
+            "en el dashboard, apuntan al mismo comportamiento."
+        ),
+    )
+
+    proyeccion = mproj.calcular_proyeccion_mercado(
+        precio_actual=precio_actual,
+        resultado_flip_global=resultado_flip_global,
+        call_wall=call_wall, put_wall=put_wall,
+        resultado_gamma_pinning=resultado_gamma_pinning, ahora=ahora,
+        resultado_bias=resultado_bias, pct_mm=pct_mm, pct_retail=pct_retail,
+        estado_velocidad=estado_velocidad, buy_pressure=buy_pressure, sell_pressure=sell_pressure,
+    )
+
+    st.metric(
+        "Score de Régimen",
+        f"{proyeccion['score']:+d}",
+        f"Confianza {proyeccion['confianza']}%",
+    )
+    st.info(proyeccion["lectura"])
+    st.warning(proyeccion["guia_operativa"])
+
+    with st.expander("Desglose de la proyección"):
+        for nombre, puntos, activo, detalle in proyeccion["componentes"]:
+            estado = "✅" if activo else "⚠️ inactivo"
+            st.caption(f"{estado} **{nombre}**: {puntos:+.1f} pts — {detalle}")
+
+    st.caption(
+        "⚠️ Lectura probabilística basada en la estructura de opciones (Walls, "
+        "Pinning, Flip Global) ya calculada arriba, cruzada con Market Bias y "
+        "Participantes de Mercado. No es una garantía de comportamiento del "
+        "precio ni una señal de entrada por sí sola — cada nivel debe leerse "
+        "después de su reacción real, no antes."
+    )
+
     # ----------------------------------
     # HEATMAP DE STRIKES — FORMATO BOOK DE PROFUNDIDAD (DOM)
     # ----------------------------------
