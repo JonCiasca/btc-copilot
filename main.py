@@ -8,8 +8,11 @@ import math
 import json
 import os
 from datetime import datetime, timezone
+import uuid
+from streamlit_cookies_manager import EncryptedCookieManager
 import market_bias as mb
 import market_projection as mproj
+import iv_structure as ivs
 
 # ----------------------------------
 # CONFIG
@@ -28,8 +31,8 @@ st.set_page_config(
 # actualizá FECHA_ULTIMA_ACTUALIZACION a mano cada vez que el CÓDIGO
 # cambie (nueva capa, fix, ajuste de UI), no cada vez que llega un
 # dato nuevo de Binance/Deribit.
-VERSION_APP = "V 0.1.1"
-FECHA_ULTIMA_ACTUALIZACION = "12/07/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
+VERSION_APP = "V 0.1.0"
+FECHA_ULTIMA_ACTUALIZACION = "10/07/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
 
 # ----------------------------------
 # REFRESH DINÁMICO AL ARRANQUE
@@ -94,35 +97,112 @@ PROXY_URL = "https://btccopilot-beta1-0-1.onrender.com"
 # de datos externa (ej. Google Sheets como planilla-base, Supabase,
 # etc.) en vez de un archivo local.
 
+# LIMITACIÓN HONESTA: en el plan gratuito de Streamlit Community Cloud
+# este archivo puede resetearse a cero en un redeploy, o si la app se
+# duerme por inactividad y el entorno se reinicia. Para testing con un
+# grupo chico es suficiente; si más adelante necesitás un conteo
+# realmente persistente a largo plazo, hay que migrar esto a una base
+# de datos externa (ej. Google Sheets como planilla-base, Supabase,
+# etc.) en vez de un archivo local.
+
 RUTA_CONTADOR = "contador_sesiones.json"
 
 
 def _leer_contador():
+    """
+    Estructura del archivo (retro-compatible con el formato viejo que
+    solo tenía "total_sesiones"):
+      {
+        "total_sesiones": int,          # BRUTO -- cuenta cada session_state
+                                          # nuevo. Incluye reconexiones de
+                                          # WebSocket (datos celulares,
+                                          # reinicios del contenedor de
+                                          # Streamlit Cloud, etc.) -- NO
+                                          # equivale a "visitas reales".
+        "dispositivos_unicos": [ids...]  # NUEVO -- un id persistente por
+                                          # dispositivo/navegador (guardado
+                                          # en cookie), solo suma una vez
+                                          # por dispositivo aunque se
+                                          # reconecte mil veces.
+      }
+    """
     if os.path.exists(RUTA_CONTADOR):
         try:
             with open(RUTA_CONTADOR, "r") as f:
-                return json.load(f).get("total_sesiones", 0)
+                data = json.load(f)
+                data.setdefault("total_sesiones", 0)
+                data.setdefault("dispositivos_unicos", [])
+                return data
         except Exception:
-            return 0
-    return 0
+            return {"total_sesiones": 0, "dispositivos_unicos": []}
+    return {"total_sesiones": 0, "dispositivos_unicos": []}
 
 
-def _incrementar_contador():
-    total = _leer_contador() + 1
+def _guardar_contador(data):
     try:
         with open(RUTA_CONTADOR, "w") as f:
-            json.dump({"total_sesiones": total}, f)
+            json.dump(data, f)
     except Exception:
         pass  # si falla escribir (ej. filesystem read-only), no rompemos la app
-    return total
 
+
+def _incrementar_contador_bruto():
+    data = _leer_contador()
+    data["total_sesiones"] = data.get("total_sesiones", 0) + 1
+    _guardar_contador(data)
+    return data["total_sesiones"]
+
+
+def _registrar_dispositivo(device_id):
+    """
+    Suma el dispositivo a la lista de únicos SOLO si no estaba ya --
+    a diferencia del contador bruto, esto no se mueve con cada
+    reconexión de WebSocket, solo con un dispositivo/navegador
+    realmente nuevo (mientras no borre cookies ni cambie de navegador).
+    """
+    data = _leer_contador()
+    dispositivos = data.get("dispositivos_unicos", [])
+    if device_id not in dispositivos:
+        dispositivos.append(device_id)
+        data["dispositivos_unicos"] = dispositivos
+        _guardar_contador(data)
+    return len(dispositivos)
+
+
+# COOKIE_PASSWORD: no es información sensible (no protege datos de
+# usuario, solo firma la cookie del device_id para que no se pueda
+# falsificar a mano), pero de todas formas conviene cambiarla por
+# algo propio antes de publicar el sitio.
+COOKIE_PASSWORD = "flowmdq2026-cookies"  # 🔑 CAMBIAR antes de publicar
+cookies = EncryptedCookieManager(prefix="btccopilot/", password=COOKIE_PASSWORD)
 
 # "session_state" vive por sesión de navegador: si esta clave no existe
 # todavía, es la PRIMERA carga de esta sesión (no un refresh de los
-# 15s, que no recrea session_state). Así evitamos contar de más.
+# 15s, que no recrea session_state). Así evitamos contar de más en el
+# contador BRUTO. Pero una reconexión de WebSocket (típico en datos
+# celulares, o si el contenedor de Streamlit Cloud se reinicia)
+# TAMBIÉN crea un session_state nuevo aunque sea el mismo dispositivo
+# de siempre -- por eso el bruto puede inflarse sin visitas reales. El
+# id de dispositivo (cookie, abajo) es el que sí sobrevive a eso.
 if "sesion_contada" not in st.session_state:
     st.session_state.sesion_contada = True
-    _incrementar_contador()
+    _incrementar_contador_bruto()
+
+# Dispositivo único vía cookie: sobrevive a reconexiones de WebSocket y
+# a reinicios del contenedor -- solo cambia si el usuario borra
+# cookies o abre desde un navegador/dispositivo distinto. No bloquea
+# el resto de la app: si la cookie todavía no está lista este ciclo,
+# simplemente no registra nada y lo intenta de nuevo en el próximo
+# rerun (que el propio componente dispara solo).
+if cookies.ready():
+    device_id = cookies.get("device_id")
+    if not device_id:
+        device_id = str(uuid.uuid4())
+        cookies["device_id"] = device_id
+        cookies.save()
+    if "dispositivo_registrado" not in st.session_state:
+        st.session_state.dispositivo_registrado = True
+        _registrar_dispositivo(device_id)
 
 
 def mostrar_estado_no_disponible(detalle_tecnico, contexto=""):
@@ -164,12 +244,26 @@ es_admin = parametros_url.get("admin") == CLAVE_ADMIN
 
 if es_admin:
     with st.expander("🔐 Panel de admin (solo visible con clave)", expanded=True):
-        st.metric("Sesiones abiertas (histórico acumulado)", _leer_contador())
-        st.caption(
-            "Cuenta sesiones nuevas, no refreshes de 15s. Puede resetearse en un "
-            "redeploy del plan gratuito de Streamlit Cloud — no es un dato 100% "
-            "persistente a largo plazo, sirve como referencia para este testing."
-        )
+        datos_contador = _leer_contador()
+
+        col_bruto, col_unicos = st.columns(2)
+        with col_bruto:
+            st.metric("Reconexiones totales (bruto)", datos_contador.get("total_sesiones", 0))
+            st.caption(
+                "Cuenta cada session_state nuevo. Incluye reconexiones de "
+                "WebSocket (datos celulares, reinicios del contenedor) -- "
+                "NO equivale a visitas reales. Se mantiene por referencia "
+                "histórica, ya no es la métrica principal."
+            )
+        with col_unicos:
+            st.metric("Dispositivos únicos (aprox.)", len(datos_contador.get("dispositivos_unicos", [])))
+            st.caption(
+                "Vía cookie persistente por dispositivo/navegador: solo suma "
+                "una vez por dispositivo, sobrevive a reconexiones. Se resetea "
+                "si el usuario borra cookies, cambia de navegador, o en un "
+                "redeploy del plan gratuito de Streamlit Cloud (el archivo no "
+                "es 100% persistente a largo plazo)."
+            )
 
 st.title("📈 BTC Copilot by JonFlow-MDQ")
 
@@ -2077,6 +2171,7 @@ with tab_dashboard:
     zona_gamma_lo = None
     vencimiento_local_dt = None
     resultado_gamma_pinning = None
+    resultado_iv_estructura = None
 
     if deribit_disponible:
 
@@ -2174,6 +2269,18 @@ with tab_dashboard:
         )
         resultado_gamma_pinning = calcular_gamma_pinning(instrumentos_deribit)
 
+        # IV Skew / Term Structure: reusa el mismo vencimiento "corto" que
+        # ya usa Gamma Pinning (el más próximo) y el mismo "largo" que ya
+        # usa el Flip Global (el último de los 5 semanales) -- no se
+        # inventa ningún criterio de selección de vencimientos nuevo.
+        vencimiento_corto_iv = (
+            resultado_gamma_pinning["vencimiento_usado"] if resultado_gamma_pinning else None
+        )
+        resultado_iv_estructura = ivs.calcular_estructura_iv(
+            instrumentos_deribit, precio_actual,
+            vencimiento_corto=vencimiento_corto_iv, vencimiento_largo=vencimiento_global_max,
+        )
+
         if resultado_flip_global:
             zona_gamma_hi, zona_gamma_lo = detectar_zonas_gamma_local(
                 resultado_flip_global["curva"], precio_actual
@@ -2188,6 +2295,8 @@ with tab_dashboard:
         st.session_state.call_wall_oi_historial = []
     if "put_wall_oi_historial" not in st.session_state:
         st.session_state.put_wall_oi_historial = []
+    if "iv_atm_corto_historial" not in st.session_state:
+        st.session_state.iv_atm_corto_historial = []
 
 
 def _actualizar_y_calcular_cambio_oi(historial_lista, oi_actual, ventana=10, tope=20):
@@ -2311,6 +2420,28 @@ with tab_dashboard:
         put_wall_oi_cambio = _actualizar_y_calcular_cambio_oi(
             st.session_state.put_wall_oi_historial, put_wall["oi"]
         )
+
+    # IV Skew / Term Structure: cambio % del corto plazo vs ~10 refreshes
+    # atrás (mismo mecanismo de historial que las Walls), y la lectura
+    # asociativa "IV subiendo/bajando + régimen = ..." que cruza ese
+    # cambio con el signo del GEX en spot del Flip Global.
+    cambio_iv_corto_pct = None
+    if resultado_iv_estructura and resultado_iv_estructura.get("iv_atm_corto") is not None:
+        cambio_iv_corto_pct = _actualizar_y_calcular_cambio_oi(
+            st.session_state.iv_atm_corto_historial, resultado_iv_estructura["iv_atm_corto"]
+        )
+
+    gex_spot_global_actual = (
+        resultado_flip_global.get("gex_spot") if resultado_flip_global else None
+    )
+    iv_atm_corto_actual = (
+        resultado_iv_estructura.get("iv_atm_corto") if resultado_iv_estructura else None
+    )
+    iv_asociativa_icono, iv_asociativa_detalle = ivs.lectura_asociativa_iv(
+        cambio_iv_corto_pct, gex_spot_global_actual, iv_atm_corto_actual
+    ) if iv_atm_corto_actual is not None else (
+        "⚪ Sin IV disponible", "Deribit no devolvió IV este ciclo."
+    )
 
     # Filtro de ruido de liquidez (switch reubicado y mejorado, dentro del
     # bloque de niveles porque alimenta directamente el overlay de MAG/Imán).
@@ -3432,6 +3563,51 @@ with tab_opciones:
         "precio ni una señal de entrada por sí sola — cada nivel debe leerse "
         "después de su reacción real, no antes."
     )
+
+    st.divider()
+
+    # ----------------------------------
+    # 📉 IV SKEW / TERM STRUCTURE
+    # ----------------------------------
+    # Mismo mark_iv que Deribit ya entrega por instrumento (usado hasta
+    # ahora solo como insumo de Black-Scholes) expuesto como señal propia.
+    # Ver iv_structure.py para el detalle de cada componente.
+
+    st.subheader(
+        "📉 IV Skew / Term Structure",
+        help=(
+            "Volatilidad Implícita real de Deribit, no un dato nuevo — el "
+            "mismo mark_iv que ya se usa para calcular Gamma/Delta/Vega/Theta "
+            "expuesto como señal en sí misma. Skew: compara IV de puts OTM vs "
+            "calls OTM (ponderado por OI) -- puts más caras = el mercado paga "
+            "más por cobertura de caída. Term Structure: compara la IV del "
+            "vencimiento más próximo contra uno más lejano -- corto plazo más "
+            "caro (invertida) = evento/riesgo cercano priced-in."
+        ),
+    )
+
+    if resultado_iv_estructura and resultado_iv_estructura.get("iv_atm_corto") is not None:
+        st.metric(
+            iv_asociativa_icono,
+            f"{resultado_iv_estructura['iv_atm_corto']*100:.1f}% IV",
+            f"{cambio_iv_corto_pct:+.1f}% vs ventana" if cambio_iv_corto_pct is not None else "sin historial todavía",
+        )
+        st.info(iv_asociativa_detalle)
+
+        with st.expander("Desglose de Skew y Term Structure"):
+            st.caption(f"**Term Structure:** {resultado_iv_estructura['term_structure_lectura']}")
+            st.caption(resultado_iv_estructura["skew_corto_lectura"])
+            st.caption(resultado_iv_estructura["skew_largo_lectura"])
+
+        st.caption(
+            "⚠️ La asociación IV+régimen es una lectura de UNA sola señal — "
+            "combinarla siempre con velocidad, presión y el Score de Régimen "
+            "de arriba antes de operarla. Con pocos strikes OTM líquidos "
+            "(muestra chica, señalado arriba si aplica) el dato es real pero "
+            "más frágil que Walls/Pinning."
+        )
+    else:
+        st.caption("⚪ Sin IV disponible este ciclo (Deribit no respondió o sin instrumentos).")
 
     # ----------------------------------
     # HEATMAP DE STRIKES — FORMATO BOOK DE PROFUNDIDAD (DOM)
