@@ -23,6 +23,26 @@ st.set_page_config(
     page_icon="📈",
     layout="wide"
 )
+
+# ----------------------------------
+# ESTILO GLOBAL: marcos amarillos en vez de grises
+# ----------------------------------
+# Pedido del usuario: "prolijar" el dashboard sin marcos grises -- los
+# contenedores con borde (st.container(border=True), usados sobre todo
+# en la tab de Analítica Automática) traen por defecto un gris neutro
+# de Streamlit. Esto lo reemplaza por un amarillo translúcido, sin
+# tocar el resto de la paleta (candlestick, botones, etc. quedan igual).
+st.markdown(
+    """
+    <style>
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        border: 1px solid rgba(250, 204, 21, 0.35) !important;
+        border-radius: 8px !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
  
 # Versión del build, mostrada en letra chica junto a la fecha de
 # última actualización (ver más abajo, cerca del gráfico principal).
@@ -268,7 +288,7 @@ if es_admin:
 st.title("📈 BTC Copilot by JonFlow-MDQ")
  
 tab_dashboard, tab_opciones, tab_predicciones = st.tabs(
-    ["📊 Dashboard", "📐 Opciones / Derivados", "🔮 Predicciones"]
+    ["📊 Dashboard", "📐 Opciones / Derivados", "📊 Analítica Automática"]
 )
  
 with tab_dashboard:
@@ -587,10 +607,13 @@ def obtener_predicciones():
  
 def _renderizar_prediccion(pred, df_referencia, idx):
     """
-    Dibuja UNA tesis: candlestick de referencia + zigzag proyectado
-    (precio de emisión -> etapas) + línea de invalidación, mismo
-    espíritu visual que las marcas manuales de TradingView (swing +
-    flip + proyección), pero generado automáticamente.
+    Dibuja UN análisis automatizado: candlestick de referencia + zigzag
+    proyectado (precio de emisión -> etapas) + línea de invalidación,
+    mismo espíritu visual que las marcas manuales de TradingView (swing
+    + flip + proyección), pero generado automáticamente por el motor
+    estadístico del proxy -- no es una adivinanza, es un cálculo sobre
+    tendencia + régimen gamma + niveles ya definidos (ver docstring de
+    _generar_prediccion en app.py).
     """
  
     ts_emision_raw = pred.get("ts_emision")
@@ -605,7 +628,7 @@ def _renderizar_prediccion(pred, df_referencia, idx):
  
     sesgo = pred.get("sesgo", "neutral")
     icono = {"alcista": "🟢", "bajista": "🔴", "neutral": "🟡"}.get(sesgo, "🟡")
-    estado_txt = "🕒 VENCIDA" if vencida else "✅ VIGENTE"
+    estado_txt = "🕒 VENCIDO" if vencida else "✅ VIGENTE"
  
     hora_txt = ts_emision_raw
     try:
@@ -616,11 +639,49 @@ def _renderizar_prediccion(pred, df_referencia, idx):
     with st.container(border=True):
  
         st.markdown(
-            f"**{icono} Predicción — {sesgo.upper()} · confianza {pred.get('confianza', 0)}%** "
-            f"&nbsp;·&nbsp; {estado_txt}"
+            f"""<div style="font-size:16px;font-weight:700;color:#facc15;">
+            {icono} ANÁLISIS AUTOMATIZADO — {sesgo.upper()} · confianza {pred.get('confianza', 0)}%
+            &nbsp;·&nbsp; <span style="font-weight:600;">{estado_txt}</span>
+            </div>""",
+            unsafe_allow_html=True,
         )
-        st.caption(f"Emitida: {hora_txt} · Precio de emisión: ${pred.get('precio_emision', 0):,.0f}")
-        st.info(pred.get("resumen", ""))
+        st.caption(f"Emitido: {hora_txt} · Precio de emisión: ${pred.get('precio_emision', 0):,.0f}")
+        st.markdown(
+            f"""<div style="border:1px solid rgba(250,204,21,0.4);border-radius:6px;
+            padding:10px 12px;background:rgba(250,204,21,0.06);color:#e5e5e5;">
+            {pred.get("resumen", "")}
+            </div>""",
+            unsafe_allow_html=True,
+        )
+
+        # --- AUTOEVALUACIÓN DE VERACIDAD ---
+        # Se completa sola en el proxy (~4hs después de emitido, 1hs
+        # antes de pasar a VENCIDO) comparando el sesgo/etapas contra
+        # el precio real -- ver _evaluar_prediccion en app.py.
+        evaluacion = pred.get("evaluacion")
+        if evaluacion:
+            veracidad = evaluacion.get("veracidad_pct", 0)
+            if veracidad >= 70:
+                color_verac = "#22c55e"
+            elif veracidad >= 40:
+                color_verac = "#facc15"
+            else:
+                color_verac = "#ef4444"
+            st.markdown(
+                f"""<div style="margin-top:8px;border-left:3px solid {color_verac};
+                padding:6px 10px;background:rgba(255,255,255,0.03);">
+                <span style="color:{color_verac};font-weight:700;">
+                🧪 Autoevaluación de veracidad: {veracidad}/100</span><br/>
+                <span style="font-size:12.5px;color:#c7c7c7;">{evaluacion.get("detalle","")}</span><br/>
+                <span style="font-size:11px;color:#8a8a8a;">
+                Evaluado contra ${evaluacion.get("precio_evaluacion",0):,.0f}
+                </span>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+            st.progress(veracidad / 100)
+        else:
+            st.caption("🧪 Autoevaluación pendiente — se calcula sola ~1hs antes de que este análisis venza.")
  
         fig = go.Figure()
  
@@ -675,7 +736,7 @@ def _renderizar_prediccion(pred, df_referencia, idx):
  
         st.plotly_chart(fig, use_container_width=True, key=f"fig_prediccion_{idx}")
  
-        with st.expander("Detalle técnico de esta tesis"):
+        with st.expander("Detalle técnico de este análisis"):
             st.caption(
                 f"Tendencia 15M: {pred.get('tendencia', 'N/D')} · "
                 f"Régimen: {pred.get('regimen') or 'sin datos de Deribit este ciclo'}"
@@ -4650,43 +4711,53 @@ with tab_dashboard:
  
 with tab_predicciones:
  
-    st.subheader(
-        "🔮 Predicciones automáticas",
-        help=(
-            "Tesis de mercado generadas por el PROXY (servidor en Render), no por "
-            "esta sesión de Streamlit — corre 24/7 y emite una tesis nueva cada "
-            "~5 horas (4-5 por día), sin depender de que alguien tenga esta página "
-            "abierta. Cada tesis combina tendencia (SMA 15M), régimen gamma "
-            "(Long/Short Gamma de Deribit) y niveles de continuación (swing highs/"
-            "lows de liquidez, Walls de OI, Flip de gamma) en un sesgo con "
-            "confianza y un path proyectado en 2-3 etapas, más un nivel de "
-            "invalidación."
-        ),
+    st.markdown(
+        """<div style="font-size:26px;font-weight:800;color:#facc15;">
+        📊 Analítica Automática
+        </div>
+        <div style="font-size:13px;color:#c7c7c7;margin-top:-4px;margin-bottom:6px;">
+        Análisis estadístico automatizado — no es una adivinanza: combina tendencia,
+        régimen gamma y niveles ya calculados en el dashboard, con autoevaluación de
+        veracidad contra el precio real.
+        </div>""",
+        unsafe_allow_html=True,
+    )
+ 
+    st.caption(
+        "Generado por el PROXY (servidor en Render), no por esta sesión de "
+        "Streamlit — corre 24/7 y emite un análisis nuevo cada ~4 horas (≈6 por "
+        "día), sin depender de que alguien tenga esta página abierta. Cada análisis "
+        "combina tendencia (SMA 15M), régimen gamma (Long/Short Gamma de Deribit) y "
+        "niveles de continuación (swing highs/lows de liquidez, Walls de OI, Flip de "
+        "gamma) en un sesgo con confianza y un path proyectado en 2-3 etapas, más un "
+        "nivel de invalidación."
     )
  
     st.caption(
         "⚠️ Es una lectura estadística basada en proxies (velas + opciones), no una "
-        "recomendación de inversión. Cada tesis queda 'VIGENTE' durante ~6hs desde "
+        "recomendación de inversión. Cada análisis queda 'VIGENTE' durante ~5hs desde "
         "su emisión (una hora de margen sobre el intervalo de generación) y después "
-        "pasa a 'VENCIDA' automáticamente — seguís viéndola en el historial, pero "
-        "ya no se considera representativa del mercado actual."
+        "pasa a 'VENCIDO' automáticamente. Aproximadamente 1 hora antes de vencer, se "
+        "le calcula sola una 🧪 autoevaluación de veracidad (0-100) comparando el "
+        "sesgo y las etapas proyectadas contra el precio real en ese momento."
     )
  
     predicciones_data, error_predicciones = obtener_predicciones()
  
     if error_predicciones:
-        st.warning(f"No se pudieron obtener las predicciones del proxy: {error_predicciones}")
+        st.warning(f"No se pudo obtener la analítica del proxy: {error_predicciones}")
     elif not predicciones_data:
         st.info(
-            "Todavía no hay predicciones generadas. El proxy genera la primera "
-            "apenas arranca el servicio — si acabás de desplegar o el servicio "
-            "estaba dormido (free tier de Render), puede tardar unos minutos en "
-            "aparecer la primera."
+            "Todavía no hay análisis generados. El proxy genera el primero apenas "
+            "arranca el servicio — si acabás de desplegar o el servicio estaba "
+            "dormido (free tier de Render), puede tardar unos minutos en aparecer "
+            "el primero. También podés forzar uno ahora mismo abriendo "
+            f"`{PROXY_URL}/predicciones/generar_ahora` en el navegador."
         )
     else:
         st.caption(
-            f"Mostrando las últimas {min(len(predicciones_data), 5)} de "
-            f"{len(predicciones_data)} tesis guardadas (historial ≈2.5 días)."
+            f"Mostrando los últimos {min(len(predicciones_data), 5)} de "
+            f"{len(predicciones_data)} análisis guardados (historial ≈28hs, 7 máx.)."
         )
         for idx, pred in enumerate(predicciones_data[:5]):
             _renderizar_prediccion(pred, df_15m, idx)
