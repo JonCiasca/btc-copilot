@@ -8,6 +8,7 @@ import math
 import json
 import os
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import uuid
 from streamlit_cookies_manager import EncryptedCookieManager
 import market_bias as mb
@@ -24,65 +25,11 @@ st.set_page_config(
     layout="wide"
 )
 
-# ----------------------------------
-# ESTILO GLOBAL: marcos amarillos en vez de grises
-# ----------------------------------
-# Pedido del usuario: "prolijar" el dashboard sin marcos grises -- los
-# contenedores con borde (st.container(border=True), usados sobre todo
-# en la tab de Analítica Automática) traen por defecto un gris neutro
-# de Streamlit. Esto lo reemplaza por un amarillo translúcido, sin
-# tocar el resto de la paleta (candlestick, botones, etc. quedan igual).
-st.markdown(
-    """
-    <style>
-    /* Saca el recuadro gris por defecto de los contenedores con borde
-       (st.container(border=True)) -- se deja un filete amarillo fino a
-       la izquierda en vez de una caja completa, mismo espíritu que las
-       etiquetas amarillas/naranjas del overlay del gráfico (PIN, precio
-       actual), no un marco cerrado alrededor de todo el bloque. */
-    div[data-testid="stVerticalBlockBorderWrapper"] {
-        border: none !important;
-        border-left: 2px solid rgba(250, 204, 21, 0.55) !important;
-        border-radius: 2px !important;
-        background: transparent !important;
-        padding-left: 10px !important;
-    }
-
-    /* Botones (Normal / Scalp / Microscalp, etc.): sin marco gris/rosa
-       por defecto, solo un subrayado amarillo fino. */
-    .stButton > button, div[data-testid="stButton"] button {
-        border: none !important;
-        border-bottom: 2px solid rgba(250, 204, 21, 0.45) !important;
-        border-radius: 4px !important;
-        background: transparent !important;
-    }
-    .stButton > button:hover, .stButton > button:focus {
-        border-bottom: 2px solid #facc15 !important;
-        color: #facc15 !important;
-    }
-
-    /* st.info / st.warning / st.error: sin caja gris/celeste completa,
-       solo un filete amarillo a la izquierda. */
-    div[data-testid="stAlertContainer"], div[data-testid="stNotification"], .stAlert {
-        background: rgba(250, 204, 21, 0.04) !important;
-        border: none !important;
-        border-left: 3px solid rgba(250, 204, 21, 0.55) !important;
-        border-radius: 2px !important;
-    }
-
-    /* Toggles (capas del gráfico, filtros): saca el aro gris del track
-       cuando están inactivos; cuando están activos, el track pasa a
-       un tono amarillo en vez de rosa/gris. */
-    div[data-testid="stToggle"] label div[data-baseweb="checkbox"] {
-        border-color: transparent !important;
-    }
-    div[data-testid="stToggle"] label div[aria-checked="true"] {
-        background-color: rgba(250, 204, 21, 0.65) !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+# Zona horaria para mostrar horarios al usuario (Argentina, UTC-3 fijo,
+# sin horario de verano desde 2009). Los timestamps INTERNOS del proxy
+# (ts_emision, valido_hasta, etc.) siguen guardándose en UTC -- esto
+# solo afecta cómo se MUESTRAN en pantalla.
+TZ_ARG = ZoneInfo("America/Argentina/Buenos_Aires")
  
 # Versión del build, mostrada en letra chica junto a la fecha de
 # última actualización (ver más abajo, cerca del gráfico principal).
@@ -325,7 +272,33 @@ if es_admin:
                 "es 100% persistente a largo plazo)."
             )
  
-st.title("📈 BTC Copilot by JonFlow-MDQ")
+st.markdown(
+    f"""
+    <div style="display:flex; align-items:center; gap:14px; margin-top:6px; margin-bottom:2px;">
+        <div style="
+            width:44px; height:44px; min-width:44px;
+            border-radius:10px;
+            background: linear-gradient(135deg, #1a1d24, #0e1117);
+            border: 1px solid rgba(250,204,21,0.55);
+            display:flex; align-items:center; justify-content:center;
+            font-size:22px; font-weight:800; color:#facc15;
+        ">B</div>
+        <div>
+            <div style="font-size:30px; font-weight:800; line-height:1.15; color:#e5e5e5;">
+                BTC Copilot <span style="color:#facc15;">JonFlow-MDQ</span>
+            </div>
+            <div style="font-size:12.5px; color:#9aa0a6; margin-top:1px;">
+                Lectura analítica de derivados BTC · {VERSION_APP}
+            </div>
+        </div>
+    </div>
+    <div style="
+        height:2px; width:100%; margin:10px 0 14px 0; border-radius:2px;
+        background: linear-gradient(90deg, rgba(250,204,21,0) 0%, rgba(250,204,21,0.9) 50%, rgba(250,204,21,0) 100%);
+    "></div>
+    """,
+    unsafe_allow_html=True,
+)
  
 tab_dashboard, tab_opciones, tab_predicciones = st.tabs(
     ["📊 Dashboard", "📐 Opciones / Derivados", "📊 Analítica Automática"]
@@ -672,7 +645,10 @@ def _renderizar_prediccion(pred, df_referencia, idx):
  
     hora_txt = ts_emision_raw
     try:
-        hora_txt = datetime.fromisoformat(ts_emision_raw).strftime("%d-%b %H:%M UTC")
+        dt_utc = datetime.fromisoformat(ts_emision_raw)
+        if dt_utc.tzinfo is None:
+            dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+        hora_txt = dt_utc.astimezone(TZ_ARG).strftime("%d-%b %H:%M hs (ARG)")
     except Exception:
         pass
  
