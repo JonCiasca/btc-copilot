@@ -24,6 +24,122 @@ st.set_page_config(
     layout="wide"
 )
 
+# ----------------------------------
+# IDENTIDAD VISUAL (tema + tipografía + prolijidad de tarjetas)
+# ----------------------------------
+# Streamlit por defecto no tiene identidad propia -- esto es CSS
+# inyectado una sola vez, al arranque del script, que se aplica a TODO
+# el dashboard (las 3 solapas) sin tocar cada bloque individualmente.
+#
+# PALETA (documentada acá para no reinventarla si se agrega algo nuevo):
+#   - Acento de marca: #f0a500 (dorado) -- ya era el color de Proyección/
+#     Imán en el gráfico, ahora es oficial en toda la UI (botones, tabs,
+#     bordes de alerta).
+#   - Alcista: #22c55e / Bajista: #ef4444 (sin cambios, ya se usaban así
+#     en todo el código -- consistencia, no un color nuevo).
+#   - Fondo: degradé oscuro sutil (#0b0e14 -> #0e121a), más "terminal"
+#     que el negro plano por defecto de Streamlit.
+#
+# TIPOGRAFÍA: Inter para texto general (más prolijo que la fuente
+# default del navegador), JetBrains Mono para NÚMEROS (st.metric) --
+# una fuente monoespaciada en las cifras es estándar en dashboards de
+# trading, ayuda a comparar magnitudes de un vistazo.
+#
+# LÍMITE HONESTO: los selectores CSS (data-testid, data-baseweb) son
+# internos de Streamlit y pueden cambiar entre versiones -- están
+# probados contra streamlit==1.39.0 (la versión fijada en
+# requirements.txt). Si en algún momento se actualiza la versión de
+# Streamlit y algo se ve raro, revisar esta función primero.
+
+def _inyectar_estilos():
+    st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap');
+
+    html, body, [class*="css"] {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    .stApp {
+        background: linear-gradient(180deg, #0b0e14 0%, #0e121a 100%);
+    }
+
+    /* --- Métricas: números en mono, jerarquía clara --- */
+    [data-testid="stMetricValue"] {
+        font-family: 'JetBrains Mono', monospace;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+    }
+    [data-testid="stMetricLabel"] {
+        color: #9aa0a6;
+        font-size: 0.76rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        font-weight: 600;
+    }
+    [data-testid="stMetricDelta"] {
+        font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* --- Tarjetas (st.container(border=True)): usadas en toda la
+    solapa de Predicciones y en varios paneles de Opciones --- */
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        background: #12151d;
+        border: 1px solid #232838;
+        border-radius: 12px;
+    }
+    div[data-testid="stVerticalBlockBorderWrapper"]:hover {
+        border-color: #3a3f52;
+    }
+
+    /* --- Botones (Normal/Scalp/Microscalp, Multi-Timeframe, capas) --- */
+    .stButton > button {
+        border-radius: 8px;
+        border: 1px solid #2a2f3d;
+        background: #161b26;
+        font-weight: 600;
+        transition: border-color 0.15s ease, color 0.15s ease;
+    }
+    .stButton > button:hover {
+        border-color: #f0a500;
+        color: #f0a500;
+    }
+
+    /* --- Tabs principales (Dashboard / Opciones / Visión Analítica) --- */
+    button[data-baseweb="tab"] {
+        font-weight: 600;
+        font-size: 0.95rem;
+    }
+    button[data-baseweb="tab"][aria-selected="true"] {
+        color: #f0a500 !important;
+    }
+    div[data-baseweb="tab-highlight"] {
+        background-color: #f0a500 !important;
+    }
+
+    /* --- Alertas (info/warning/success/error) con acento dorado --- */
+    div[data-testid="stAlert"] {
+        border-radius: 10px;
+        border-left: 3px solid #f0a500;
+    }
+
+    /* --- Toggles (capas del gráfico) --- */
+    div[data-testid="stToggle"] label {
+        font-weight: 500;
+        font-size: 0.85rem;
+    }
+
+    /* --- Expanders --- */
+    div[data-testid="stExpander"] {
+        border-radius: 10px;
+        border: 1px solid #232838;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+
+_inyectar_estilos()
+
 # Versión del build, mostrada en letra chica junto a la fecha de
 # última actualización (ver más abajo, cerca del gráfico principal).
 # IMPORTANTE: estas dos constantes NO se recalculan solas con cada
@@ -265,7 +381,23 @@ if es_admin:
                 "es 100% persistente a largo plazo)."
             )
 
-st.title("📈 BTC Copilot by JonFlow-MDQ")
+st.markdown(
+    f"""
+    <div style="display:flex; align-items:center; gap:14px; padding:4px 0 2px 0;">
+        <div style="font-size:32px; line-height:1;">₿</div>
+        <div>
+            <div style="font-size:25px; font-weight:800; color:#f2f2f2; letter-spacing:-0.02em; line-height:1.15;">
+                BTC Copilot <span style="color:#f0a500;">JonFlow-MDQ</span>
+            </div>
+            <div style="font-size:12px; color:#6b7280; margin-top:1px;">
+                Lectura analítica de derivados BTC · {VERSION_APP}
+            </div>
+        </div>
+    </div>
+    <div style="height:2px; background:linear-gradient(90deg,#f0a500,transparent 75%); margin:10px 0 18px 0;"></div>
+    """,
+    unsafe_allow_html=True,
+)
 
 tab_dashboard, tab_opciones, tab_predicciones = st.tabs(
     ["📊 Dashboard", "📐 Opciones / Derivados", "🔎 Visión Analítica"]
