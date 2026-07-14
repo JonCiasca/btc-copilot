@@ -622,6 +622,33 @@ def _renderizar_prediccion(pred, df_referencia, idx):
         st.caption(f"Emitida: {hora_txt} · Precio de emisión: ${pred.get('precio_emision', 0):,.0f}")
         st.info(pred.get("resumen", ""))
 
+        resultado = pred.get("resultado")
+
+        if resultado and resultado.get("acierto_pct") is not None:
+            etiqueta_estado = {
+                "cumplida": "✅ Cumplida — tocó todas las etapas",
+                "parcial": "🟡 Parcial — tocó algunas etapas",
+                "invalidada": "❌ Invalidada — tocó el nivel de invalidación antes",
+                "en_curso": "⏳ Sellada en curso — todavía no tocó nada al momento del sello",
+            }.get(resultado.get("estado"), resultado.get("estado", ""))
+
+            col_r1, col_r2 = st.columns([1, 2])
+            with col_r1:
+                st.metric("% de acierto", f"{resultado['acierto_pct']}%")
+            with col_r2:
+                st.caption(etiqueta_estado)
+                st.caption(
+                    f"Etapas alcanzadas: {resultado['etapas_alcanzadas']}/{resultado['etapas_total']}"
+                )
+        elif resultado and resultado.get("estado") == "sin_direccion":
+            st.caption("⚪ Tesis neutral — sin dirección definida, no se evalúa % de acierto.")
+        else:
+            st.caption(
+                "⏳ Todavía sin sellar — el % de acierto se calcula automáticamente cuando "
+                "el proxy emita la próxima tesis (usa las velas reales transcurridas desde "
+                "esta emisión hasta ese momento)."
+            )
+
         fig = go.Figure()
 
         if df_referencia is not None and not df_referencia.empty:
@@ -4669,7 +4696,12 @@ with tab_predicciones:
         "recomendación de inversión. Cada tesis queda 'VIGENTE' durante ~6hs desde "
         "su emisión (una hora de margen sobre el intervalo de generación) y después "
         "pasa a 'VENCIDA' automáticamente — seguís viéndola en el historial, pero "
-        "ya no se considera representativa del mercado actual."
+        "ya no se considera representativa del mercado actual.\n\n"
+        "📏 **% de acierto:** se sella solo, cuando se emite la próxima tesis, "
+        "recorriendo cronológicamente las velas reales desde la emisión hasta ese "
+        "momento — 100% si tocó todas las etapas antes de invalidarse, parcial si "
+        "tocó algunas, reducido si se invalidó primero. Una vez sellado queda fijo, "
+        "no se recalcula después."
     )
 
     predicciones_data, error_predicciones = obtener_predicciones()
@@ -4685,10 +4717,10 @@ with tab_predicciones:
         )
     else:
         st.caption(
-            f"Mostrando las últimas {min(len(predicciones_data), 5)} de "
-            f"{len(predicciones_data)} tesis guardadas (historial ≈2.5 días)."
+            f"Mostrando las últimas {min(len(predicciones_data), 7)} de "
+            f"{len(predicciones_data)} tesis guardadas (historial ≈2.9 días)."
         )
-        for idx, pred in enumerate(predicciones_data[:5]):
+        for idx, pred in enumerate(predicciones_data[:7]):
             _renderizar_prediccion(pred, df_15m, idx)
 
 # ----------------------------------
