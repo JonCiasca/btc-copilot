@@ -31,8 +31,8 @@ st.set_page_config(
 # actualizá FECHA_ULTIMA_ACTUALIZACION a mano cada vez que el CÓDIGO
 # cambie (nueva capa, fix, ajuste de UI), no cada vez que llega un
 # dato nuevo de Binance/Deribit.
-VERSION_APP = "V 0.1.1"
-FECHA_ULTIMA_ACTUALIZACION = "13/07/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
+VERSION_APP = "V 0.1.12"
+FECHA_ULTIMA_ACTUALIZACION = "14/07/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
 
 # ----------------------------------
 # REFRESH DINÁMICO AL ARRANQUE
@@ -267,8 +267,8 @@ if es_admin:
 
 st.title("📈 BTC Copilot by JonFlow-MDQ")
 
-tab_dashboard, tab_opciones = st.tabs(
-    ["📊 Dashboard", "📐 Opciones / Derivados"]
+tab_dashboard, tab_opciones, tab_predicciones = st.tabs(
+    ["📊 Dashboard", "📐 Opciones / Derivados", "🔮 Predicciones"]
 )
 
 with tab_dashboard:
@@ -563,7 +563,131 @@ def obtener_open_interest_bybit():
     except Exception as e:
         st.session_state["bybit_error"] = str(e)
         return None
-        
+
+
+def obtener_predicciones():
+    """
+    Pide al proxy la lista de tesis de mercado ya generadas (ver
+    app.py, _hilo_generador_predicciones) -- a diferencia de todo lo
+    demás en este archivo, esto NO se calcula acá: el proxy las genera
+    solo, cada ~5hs, corriendo 24/7 como servicio, sin depender de que
+    esta sesión de Streamlit esté abierta.
+    Devuelve (lista_de_predicciones, error_str_o_None).
+    """
+    try:
+        respuesta = requests.get(f"{PROXY_URL}/predicciones", timeout=10)
+        data = respuesta.json()
+        if isinstance(data, dict) and "predicciones" in data:
+            return data["predicciones"], None
+        msg = data.get("error", str(data)) if isinstance(data, dict) else "Respuesta inesperada del proxy"
+        return None, msg
+    except Exception as e:
+        return None, str(e)
+
+
+def _renderizar_prediccion(pred, df_referencia, idx):
+    """
+    Dibuja UNA tesis: candlestick de referencia + zigzag proyectado
+    (precio de emisión -> etapas) + línea de invalidación, mismo
+    espíritu visual que las marcas manuales de TradingView (swing +
+    flip + proyección), pero generado automáticamente.
+    """
+
+    ts_emision_raw = pred.get("ts_emision")
+    valido_hasta_raw = pred.get("valido_hasta")
+
+    vencida = False
+    if valido_hasta_raw:
+        try:
+            vencida = datetime.now(timezone.utc) > datetime.fromisoformat(valido_hasta_raw)
+        except Exception:
+            vencida = False
+
+    sesgo = pred.get("sesgo", "neutral")
+    icono = {"alcista": "🟢", "bajista": "🔴", "neutral": "🟡"}.get(sesgo, "🟡")
+    estado_txt = "🕒 VENCIDA" if vencida else "✅ VIGENTE"
+
+    hora_txt = ts_emision_raw
+    try:
+        hora_txt = datetime.fromisoformat(ts_emision_raw).strftime("%d-%b %H:%M UTC")
+    except Exception:
+        pass
+
+    with st.container(border=True):
+
+        st.markdown(
+            f"**{icono} Predicción — {sesgo.upper()} · confianza {pred.get('confianza', 0)}%** "
+            f"&nbsp;·&nbsp; {estado_txt}"
+        )
+        st.caption(f"Emitida: {hora_txt} · Precio de emisión: ${pred.get('precio_emision', 0):,.0f}")
+        st.info(pred.get("resumen", ""))
+
+        fig = go.Figure()
+
+        if df_referencia is not None and not df_referencia.empty:
+            fig.add_trace(
+                go.Candlestick(
+                    x=df_referencia["open_time"],
+                    open=df_referencia["open"], high=df_referencia["high"],
+                    low=df_referencia["low"], close=df_referencia["close"],
+                    name="BTC/USDT",
+                )
+            )
+            x0 = df_referencia["open_time"].iloc[-1]
+        else:
+            x0 = datetime.now()
+
+        etapas = pred.get("etapas", [])
+
+        if etapas:
+            xs = [x0]
+            ys = [pred.get("precio_emision")]
+            textos = [""]
+            paso_x = pd.Timedelta(minutes=15)
+            for i, etapa in enumerate(etapas):
+                xs.append(x0 + paso_x * (i + 1) * 3)
+                ys.append(etapa["nivel"])
+                textos.append(f"${etapa['nivel']:,.0f}<br>{etapa['fuente']}")
+
+            fig.add_trace(
+                go.Scatter(
+                    x=xs, y=ys, mode="lines+markers+text",
+                    line=dict(color="#facc15", dash="dash", width=2),
+                    marker=dict(size=9, color="#facc15"),
+                    text=textos, textposition="top center",
+                    textfont=dict(size=10, color="#facc15"),
+                    name="Proyección",
+                )
+            )
+
+        if pred.get("invalidacion"):
+            fig.add_hline(
+                y=pred["invalidacion"], line_dash="dot", line_color="#ef4444",
+                annotation_text=f"⛔ Invalidación ${pred['invalidacion']:,.0f} ({pred.get('invalidacion_fuente', '')})",
+                annotation_position="bottom right",
+            )
+
+        fig.update_layout(
+            template="plotly_dark", paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
+            height=380, margin=dict(l=10, r=10, t=30, b=30),
+            xaxis_rangeslider_visible=False, showlegend=False,
+        )
+
+        st.plotly_chart(fig, use_container_width=True, key=f"fig_prediccion_{idx}")
+
+        with st.expander("Detalle técnico de esta tesis"):
+            st.caption(
+                f"Tendencia 15M: {pred.get('tendencia', 'N/D')} · "
+                f"Régimen: {pred.get('regimen') or 'sin datos de Deribit este ciclo'}"
+            )
+            if pred.get("funding_valor") is not None:
+                st.caption(f"Funding al momento de emisión: {pred['funding_valor']:+.4f}%")
+            for e in etapas:
+                st.caption(f"• Etapa: ${e['nivel']:,.0f} — {e['fuente']}")
+            if not etapas:
+                st.caption("Sin niveles de continuación claros detectados en este ciclo.")
+
+
 with tab_dashboard:
 
 
@@ -4523,6 +4647,49 @@ with tab_dashboard:
         "proyectados (Flip, Walls, Imán, Absorción) son zonas de mayor probabilidad "
         "estadística, no garantías de reacción del precio."
     )
+
+with tab_predicciones:
+
+    st.subheader(
+        "🔮 Predicciones automáticas",
+        help=(
+            "Tesis de mercado generadas por el PROXY (servidor en Render), no por "
+            "esta sesión de Streamlit — corre 24/7 y emite una tesis nueva cada "
+            "~5 horas (4-5 por día), sin depender de que alguien tenga esta página "
+            "abierta. Cada tesis combina tendencia (SMA 15M), régimen gamma "
+            "(Long/Short Gamma de Deribit) y niveles de continuación (swing highs/"
+            "lows de liquidez, Walls de OI, Flip de gamma) en un sesgo con "
+            "confianza y un path proyectado en 2-3 etapas, más un nivel de "
+            "invalidación."
+        ),
+    )
+
+    st.caption(
+        "⚠️ Es una lectura estadística basada en proxies (velas + opciones), no una "
+        "recomendación de inversión. Cada tesis queda 'VIGENTE' durante ~6hs desde "
+        "su emisión (una hora de margen sobre el intervalo de generación) y después "
+        "pasa a 'VENCIDA' automáticamente — seguís viéndola en el historial, pero "
+        "ya no se considera representativa del mercado actual."
+    )
+
+    predicciones_data, error_predicciones = obtener_predicciones()
+
+    if error_predicciones:
+        st.warning(f"No se pudieron obtener las predicciones del proxy: {error_predicciones}")
+    elif not predicciones_data:
+        st.info(
+            "Todavía no hay predicciones generadas. El proxy genera la primera "
+            "apenas arranca el servicio — si acabás de desplegar o el servicio "
+            "estaba dormido (free tier de Render), puede tardar unos minutos en "
+            "aparecer la primera."
+        )
+    else:
+        st.caption(
+            f"Mostrando las últimas {min(len(predicciones_data), 5)} de "
+            f"{len(predicciones_data)} tesis guardadas (historial ≈2.5 días)."
+        )
+        for idx, pred in enumerate(predicciones_data[:5]):
+            _renderizar_prediccion(pred, df_15m, idx)
 
 # ----------------------------------
 # FOOTER DE MANTENIMIENTO (changelog manual del CÓDIGO)
