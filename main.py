@@ -32,7 +32,7 @@ st.set_page_config(
 # cambie (nueva capa, fix, ajuste de UI), no cada vez que llega un
 # dato nuevo de Binance/Deribit.
 VERSION_APP = "V 0.1.12"
-FECHA_ULTIMA_ACTUALIZACION = "13/07/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
+FECHA_ULTIMA_ACTUALIZACION = "14/07/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
 
 # ----------------------------------
 # REFRESH DINÁMICO AL ARRANQUE
@@ -268,7 +268,7 @@ if es_admin:
 st.title("📈 BTC Copilot by JonFlow-MDQ")
 
 tab_dashboard, tab_opciones, tab_predicciones = st.tabs(
-    ["📊 Dashboard", "📐 Opciones / Derivados", "🔮 Predicciones"]
+    ["📊 Dashboard", "📐 Opciones / Derivados", "🔎 Visión Analítica"]
 )
 
 with tab_dashboard:
@@ -4651,7 +4651,7 @@ with tab_dashboard:
 with tab_predicciones:
 
     st.subheader(
-        "🔮 Predicciones automáticas",
+        "🔎 Visión analítica automatizada",
         help=(
             "Tesis de mercado generadas por el PROXY (servidor en Render), no por "
             "esta sesión de Streamlit — corre 24/7 y emite una tesis nueva cada "
