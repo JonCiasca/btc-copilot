@@ -136,7 +136,7 @@ _inyectar_estilos()
 # actualizá FECHA_ULTIMA_ACTUALIZACION a mano cada vez que el CÓDIGO
 # cambie (nueva capa, fix, ajuste de UI), no cada vez que llega un
 # dato nuevo de Binance/Deribit.
-VERSION_APP = "V 0.1.12"
+VERSION_APP = "V 0.1.2"
 FECHA_ULTIMA_ACTUALIZACION = "14/07/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
 
 # ----------------------------------
@@ -4824,6 +4824,33 @@ with tab_predicciones:
         "tocó algunas, reducido si se invalidó primero. Una vez sellado queda fijo, "
         "no se recalcula después."
     )
+
+    if es_admin:
+        col_boton_gen, col_info_gen = st.columns([1, 3])
+
+        with col_boton_gen:
+            if st.button(
+                "🔄 Generar análisis ahora",
+                help=(
+                    "Fuerza una tesis nueva en este momento, sin esperar el ciclo "
+                    "automático de ~5hs. Respeta un cooldown de ~2 minutos (para no "
+                    "saturar Binance/Deribit con clicks repetidos) y no interfiere si "
+                    "ya hay una generación en curso disparada por otra sesión.\n\n"
+                    "🔐 Solo visible en modo admin."
+                ),
+            ):
+                with st.spinner("Generando tesis nueva (pidiendo velas + opciones)..."):
+                    try:
+                        respuesta_manual = requests.post(f"{PROXY_URL}/predicciones/generar", timeout=20)
+                        resultado_manual = respuesta_manual.json()
+                    except Exception as e:
+                        resultado_manual = {"ok": False, "mensaje": str(e)}
+
+                if resultado_manual.get("ok"):
+                    st.success(resultado_manual.get("mensaje", "Listo."))
+                    st.rerun()
+                else:
+                    st.warning(resultado_manual.get("mensaje", "No se pudo generar en este momento."))
 
     predicciones_data, error_predicciones = obtener_predicciones()
 
