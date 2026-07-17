@@ -136,8 +136,8 @@ _inyectar_estilos()
 # actualizá FECHA_ULTIMA_ACTUALIZACION a mano cada vez que el CÓDIGO
 # cambie (nueva capa, fix, ajuste de UI), no cada vez que llega un
 # dato nuevo de Binance/Deribit.
-VERSION_APP = "V 0.1.02"
-FECHA_ULTIMA_ACTUALIZACION = "17/07/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
+VERSION_APP = "V 0.1.2"
+FECHA_ULTIMA_ACTUALIZACION = "14/07/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
 
 # ----------------------------------
 # REFRESH DINÁMICO AL ARRANQUE
@@ -170,13 +170,11 @@ CICLOS_ARRANQUE = 2
 if "ciclos_transcurridos" not in st.session_state:
     st.session_state.ciclos_transcurridos = 0
 
-# Ya NO se acelera el refresh en arranque (eso era lo que multiplicaba
-# pedidos justo cuando había ráfagas de reconexión). Se mantiene
-# "en_periodo_arranque" solo para decidir el MENSAJE (conectando vs
-# error real) en mostrar_estado_no_disponible, sin tocar el intervalo.
 en_periodo_arranque = st.session_state.ciclos_transcurridos < CICLOS_ARRANQUE
 
-st_autorefresh(interval=15000, key="btc_refresh")
+intervalo_refresh = 8000 if en_periodo_arranque else 15000
+
+st_autorefresh(interval=intervalo_refresh, key="btc_refresh")
 
 st.session_state.ciclos_transcurridos += 1
 
@@ -746,7 +744,6 @@ def _renderizar_prediccion(pred, df_referencia, idx):
         st.info(pred.get("resumen", ""))
 
         resultado = pred.get("resultado")
-        escenario_b = pred.get("escenario_b")
 
         if resultado and resultado.get("acierto_pct") is not None:
             etiqueta_estado = {
@@ -756,34 +753,13 @@ def _renderizar_prediccion(pred, df_referencia, idx):
                 "en_curso": "⏳ Sellada en curso — todavía no tocó nada al momento del sello",
             }.get(resultado.get("estado"), resultado.get("estado", ""))
 
-            resultado_b = resultado.get("escenario_b_resultado")
-
             col_r1, col_r2 = st.columns([1, 2])
             with col_r1:
-                if resultado_b is not None:
-                    st.metric(
-                        "% de acierto (combinado)", f"{resultado['acierto_pct']}%",
-                        help=(
-                            f"Ponderado: {int(resultado.get('peso_a', 1.0) * 100)}% Escenario A + "
-                            f"{int(resultado.get('peso_b', 0.0) * 100)}% Escenario B."
-                        ),
-                    )
-                else:
-                    st.metric("% de acierto", f"{resultado['acierto_pct']}%")
+                st.metric("% de acierto", f"{resultado['acierto_pct']}%")
             with col_r2:
                 st.caption(etiqueta_estado)
                 st.caption(
-                    f"Etapas alcanzadas (A): {resultado['etapas_alcanzadas']}/{resultado['etapas_total']}"
-                )
-
-            if resultado_b is not None:
-                etiqueta_estado_b = {
-                    "cumplida": "✅ Cumplida", "parcial": "🟡 Parcial",
-                    "invalidada": "❌ Invalidada", "en_curso": "⏳ En curso",
-                }.get(resultado_b.get("estado"), resultado_b.get("estado", ""))
-                st.caption(
-                    f"🟣 Escenario B activado (A se invalidó): {etiqueta_estado_b} — "
-                    f"{resultado_b['acierto_pct']}% · etapas {resultado_b['etapas_alcanzadas']}/{resultado_b['etapas_total']}"
+                    f"Etapas alcanzadas: {resultado['etapas_alcanzadas']}/{resultado['etapas_total']}"
                 )
         elif resultado and resultado.get("estado") == "sin_direccion":
             st.caption("⚪ Tesis neutral — sin dirección definida, no se evalúa % de acierto.")
@@ -835,45 +811,9 @@ def _renderizar_prediccion(pred, df_referencia, idx):
         if pred.get("invalidacion"):
             fig.add_hline(
                 y=pred["invalidacion"], line_dash="dot", line_color="#ef4444",
-                annotation_text=f"⛔ Invalidación A ${pred['invalidacion']:,.0f} ({pred.get('invalidacion_fuente', '')})",
+                annotation_text=f"⛔ Invalidación ${pred['invalidacion']:,.0f} ({pred.get('invalidacion_fuente', '')})",
                 annotation_position="bottom right",
             )
-
-        # --- Escenario B (contingente): arranca en el mismo punto donde
-        # se invalida A, proyecta la dirección opuesta. Color violeta
-        # para no confundirse con A (amarillo), tendencia (verde/rojo)
-        # ni imán (azul), que ya se usan en el resto del dashboard. ---
-        if escenario_b and escenario_b.get("etapas"):
-            punto_partida_b = escenario_b.get("punto_partida")
-            etapas_b = escenario_b["etapas"]
-
-            if punto_partida_b is not None:
-                xs_b = [x0]
-                ys_b = [punto_partida_b]
-                textos_b = [""]
-                paso_x = pd.Timedelta(minutes=15)
-                for i, etapa in enumerate(etapas_b):
-                    xs_b.append(x0 + paso_x * (i + 1) * 3)
-                    ys_b.append(etapa["nivel"])
-                    textos_b.append(f"${etapa['nivel']:,.0f}<br>{etapa['fuente']}")
-
-                fig.add_trace(
-                    go.Scatter(
-                        x=xs_b, y=ys_b, mode="lines+markers+text",
-                        line=dict(color="#a78bfa", dash="dashdot", width=2),
-                        marker=dict(size=8, color="#a78bfa", symbol="diamond"),
-                        text=textos_b, textposition="bottom center",
-                        textfont=dict(size=10, color="#a78bfa"),
-                        name="Proyección B (contingente)",
-                    )
-                )
-
-            if escenario_b.get("invalidacion"):
-                fig.add_hline(
-                    y=escenario_b["invalidacion"], line_dash="dot", line_color="#a78bfa",
-                    annotation_text=f"⛔ Invalidación B ${escenario_b['invalidacion']:,.0f}",
-                    annotation_position="top right",
-                )
 
         fig.update_layout(
             template="plotly_dark", paper_bgcolor="#0e1117", plot_bgcolor="#0e1117",
@@ -890,23 +830,10 @@ def _renderizar_prediccion(pred, df_referencia, idx):
             )
             if pred.get("funding_valor") is not None:
                 st.caption(f"Funding al momento de emisión: {pred['funding_valor']:+.4f}%")
-            st.caption("**Escenario A (principal):**")
             for e in etapas:
                 st.caption(f"• Etapa: ${e['nivel']:,.0f} — {e['fuente']}")
             if not etapas:
                 st.caption("Sin niveles de continuación claros detectados en este ciclo.")
-
-            if escenario_b and escenario_b.get("etapas"):
-                st.caption(
-                    f"**🟣 Escenario B (contingente, arranca si se invalida A en "
-                    f"${escenario_b.get('punto_partida', 0):,.0f}):**"
-                )
-                for e in escenario_b["etapas"]:
-                    st.caption(f"• Etapa: ${e['nivel']:,.0f} — {e['fuente']}")
-                st.caption(
-                    f"Invalida B: ${escenario_b.get('invalidacion', 0):,.0f} "
-                    f"({escenario_b.get('invalidacion_fuente', '')})"
-                )
 
 
 with tab_dashboard:
