@@ -136,8 +136,8 @@ _inyectar_estilos()
 # actualizá FECHA_ULTIMA_ACTUALIZACION a mano cada vez que el CÓDIGO
 # cambie (nueva capa, fix, ajuste de UI), no cada vez que llega un
 # dato nuevo de Binance/Deribit.
-VERSION_APP = "V 0.1.01"
-FECHA_ULTIMA_ACTUALIZACION = "16/07/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
+VERSION_APP = "V 0.1.02"
+FECHA_ULTIMA_ACTUALIZACION = "17/07/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
 
 # ----------------------------------
 # REFRESH DINÁMICO AL ARRANQUE
@@ -170,11 +170,13 @@ CICLOS_ARRANQUE = 2
 if "ciclos_transcurridos" not in st.session_state:
     st.session_state.ciclos_transcurridos = 0
 
+# Ya NO se acelera el refresh en arranque (eso era lo que multiplicaba
+# pedidos justo cuando había ráfagas de reconexión). Se mantiene
+# "en_periodo_arranque" solo para decidir el MENSAJE (conectando vs
+# error real) en mostrar_estado_no_disponible, sin tocar el intervalo.
 en_periodo_arranque = st.session_state.ciclos_transcurridos < CICLOS_ARRANQUE
 
-intervalo_refresh = 8000 if en_periodo_arranque else 15000
-
-st_autorefresh(interval=intervalo_refresh, key="btc_refresh")
+st_autorefresh(interval=15000, key="btc_refresh")
 
 st.session_state.ciclos_transcurridos += 1
 
