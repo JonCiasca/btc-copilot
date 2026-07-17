@@ -184,7 +184,7 @@ st.session_state.ciclos_transcurridos += 1
 # Render, que corre en una región no bloqueada.
 # ----------------------------------
 
-PROXY_URL = "https://btccopilot-beta1-0-1.onrender.com"
+PROXY_URL = "https://btccopilot-beta1-0.onrender.com"
 
 # ----------------------------------
 # CONTADOR DE SESIONES (visible solo en panel de admin oculto)
