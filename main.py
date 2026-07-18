@@ -531,7 +531,7 @@ if not es_admin and not st.session_state.autenticado:
             unsafe_allow_html=True,
         )
 
-        st.subheader("🔐 Acceso restringido")
+        st.subheader("✅ Acceso Gratuito")
 
         # Flujo por MAIL, en un solo campo de entrada: según en qué
         # estado esté ese mail (nuevo / pendiente / aprobado sin clave
