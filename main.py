@@ -357,58 +357,104 @@ def mostrar_estado_no_disponible(detalle_tecnico, contexto=""):
 # crecimiento descontrolado de sesiones simultáneas que venía
 # contribuyendo a los bans de Binance, sin todavía pagar por hosting.
 #
-# LÍMITE HONESTO: las claves se guardan hasheadas (sha256) en un
-# archivo JSON simple, mismo criterio que contador_sesiones.json --
-# no es una base de datos con manejo serio de seguridad (no hay salt
-# por usuario, no hay rate-limit de intentos de login), pero para una
-# lista chica de gente de confianza que vos autorizás a mano, alcanza
-# y sobra. Mismo archivo, misma limitación de persistencia en el plan
+# FLUJO (pedido explícito del usuario -- separar "aprobar identidad"
+# de "conocer la clave"): el admin NUNCA ve ni define la clave de
+# nadie, solo aprueba el MAIL. Recién después de aprobado, esa persona
+# elige su propia clave la primera vez que vuelve a entrar.
+#   1. Persona pone su mail -> si es la primera vez, queda "pendiente".
+#   2. Admin ve la lista de pendientes en el panel y aprueba (o borra).
+#   3. Persona vuelve a poner el mismo mail -> como ya está aprobado
+#      pero todavía no tiene clave, se le pide que CREE una -- ese
+#      valor nunca pasa por el admin, se hashea al vuelo.
+#   4. De ahí en más, esa persona entra con mail + la clave que ELLA
+#      eligió.
+#
+# LÍMITE HONESTO: se guarda hasheado (sha256) en un archivo JSON
+# simple, mismo criterio que contador_sesiones.json -- no es una base
+# de datos con manejo serio de seguridad (no hay salt por usuario, no
+# hay rate-limit de intentos, no hay verificación real de que el mail
+# ingresado le pertenezca a quien lo escribe -- la aprobación manual
+# del admin es el único control real). Para una lista chica de gente
+# de confianza alcanza; misma limitación de persistencia del plan
 # gratuito de Streamlit Cloud (puede resetearse en un redeploy).
 import hashlib
 
-RUTA_USUARIOS = "usuarios_autorizados.json"
+RUTA_SOLICITUDES = "solicitudes_acceso.json"
 
 
 def _hash_clave(clave):
     return hashlib.sha256(clave.encode()).hexdigest()
 
 
-def _leer_usuarios():
-    if os.path.exists(RUTA_USUARIOS):
+def _leer_solicitudes():
+    if os.path.exists(RUTA_SOLICITUDES):
         try:
-            with open(RUTA_USUARIOS, "r") as f:
+            with open(RUTA_SOLICITUDES, "r") as f:
                 return json.load(f)
         except Exception:
             return {}
     return {}
 
 
-def _guardar_usuarios(data):
+def _guardar_solicitudes(data):
     try:
-        with open(RUTA_USUARIOS, "w") as f:
+        with open(RUTA_SOLICITUDES, "w") as f:
             json.dump(data, f)
     except Exception:
         pass
 
 
-def _agregar_usuario(nombre_usuario, clave):
-    usuarios = _leer_usuarios()
-    usuarios[nombre_usuario] = _hash_clave(clave)
-    _guardar_usuarios(usuarios)
+def _crear_solicitud(mail):
+    """Registra un mail nuevo como pendiente. No hace nada si ya existía (para no pisar su estado)."""
+    solicitudes = _leer_solicitudes()
+    if mail not in solicitudes:
+        solicitudes[mail] = {"estado": "pendiente", "password_hash": None}
+        _guardar_solicitudes(solicitudes)
 
 
-def _eliminar_usuario(nombre_usuario):
-    usuarios = _leer_usuarios()
-    usuarios.pop(nombre_usuario, None)
-    _guardar_usuarios(usuarios)
+def _aprobar_solicitud(mail):
+    solicitudes = _leer_solicitudes()
+    if mail in solicitudes:
+        solicitudes[mail]["estado"] = "aprobado"
+        _guardar_solicitudes(solicitudes)
 
 
-def _verificar_credenciales(nombre_usuario, clave):
-    usuarios = _leer_usuarios()
-    hash_guardado = usuarios.get(nombre_usuario)
-    if hash_guardado is None:
+def _eliminar_solicitud(mail):
+    solicitudes = _leer_solicitudes()
+    solicitudes.pop(mail, None)
+    _guardar_solicitudes(solicitudes)
+
+
+def _establecer_password(mail, clave):
+    """Solo funciona si el mail ya está aprobado -- lo llama la propia
+    persona, nunca el admin, así la clave nunca pasa por el panel."""
+    solicitudes = _leer_solicitudes()
+    if mail in solicitudes and solicitudes[mail].get("estado") == "aprobado":
+        solicitudes[mail]["password_hash"] = _hash_clave(clave)
+        _guardar_solicitudes(solicitudes)
+        return True
+    return False
+
+
+def _verificar_credenciales(mail, clave):
+    solicitudes = _leer_solicitudes()
+    entrada = solicitudes.get(mail)
+    if not entrada or entrada.get("password_hash") is None:
         return False
-    return hash_guardado == _hash_clave(clave)
+    return entrada["password_hash"] == _hash_clave(clave)
+
+
+def _estado_mail(mail):
+    """Devuelve 'nuevo' | 'pendiente' | 'sin_clave' | 'activo' según dónde está ese mail en el flujo."""
+    solicitudes = _leer_solicitudes()
+    entrada = solicitudes.get(mail)
+    if entrada is None:
+        return "nuevo"
+    if entrada.get("estado") != "aprobado":
+        return "pendiente"
+    if entrada.get("password_hash") is None:
+        return "sin_clave"
+    return "activo"
 
 
 # Solo aparece si la URL incluye el parámetro correcto, ej:
@@ -417,7 +463,7 @@ def _verificar_credenciales(nombre_usuario, clave):
 # Nadie sin ese parámetro exacto en la URL ve este panel.
 # NOTA: es_admin se calcula ACÁ (antes del gate de login, más abajo)
 # porque el admin nunca debe quedar bloqueado por el propio sistema
-# de usuarios -- aunque se borre por error toda la lista de cuentas,
+# de usuarios -- aunque se borre por error toda la lista de solicitudes,
 # vos seguís entrando con la clave en la URL.
 
 CLAVE_ADMIN = "flowmdq2026"  # 🔑 CAMBIAR antes de publicar
@@ -435,14 +481,14 @@ if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
 
 # Si el dispositivo ya se logueó antes, restauramos la sesión desde la
-# cookie -- evita pedir usuario/clave en CADA reconexión de WebSocket
+# cookie -- evita pedir mail/clave en CADA reconexión de WebSocket
 # (frecuentes en este dashboard por la naturaleza de redes móviles;
 # sin esto, el login sería insoportable de usar).
 if not st.session_state.autenticado and cookies.ready():
-    usuario_cookie = cookies.get("auth_user")
-    if usuario_cookie and usuario_cookie in _leer_usuarios():
+    mail_cookie = cookies.get("auth_user")
+    if mail_cookie and _estado_mail(mail_cookie) == "activo":
         st.session_state.autenticado = True
-        st.session_state.usuario_actual = usuario_cookie
+        st.session_state.usuario_actual = mail_cookie
 
 if not es_admin and not st.session_state.autenticado:
     st.markdown(
@@ -486,23 +532,81 @@ if not es_admin and not st.session_state.autenticado:
         )
 
         st.subheader("🔐 Acceso restringido")
-        st.caption("Dashboard gratuito x tiempo limitado. Si necesitás una cuenta, escribile al administrador.")
 
-        with st.form("form_login"):
-            usuario_input = st.text_input("Usuario")
-            clave_input = st.text_input("Clave", type="password")
-            enviado = st.form_submit_button("Ingresar", use_container_width=True)
+        # Flujo por MAIL, en un solo campo de entrada: según en qué
+        # estado esté ese mail (nuevo / pendiente / aprobado sin clave
+        # / activo), el propio formulario decide qué mostrar a
+        # continuación -- ver _estado_mail. El admin nunca ve ni define
+        # ninguna clave, solo aprueba el mail (ver panel de admin).
 
-        if enviado:
-            if _verificar_credenciales(usuario_input, clave_input):
-                st.session_state.autenticado = True
-                st.session_state.usuario_actual = usuario_input
-                if cookies.ready():
-                    cookies["auth_user"] = usuario_input
-                    cookies.save()
+        if "mail_en_proceso" not in st.session_state:
+            st.session_state.mail_en_proceso = None
+
+        if st.session_state.mail_en_proceso is None:
+            st.caption("Ingresá tu mail para pedir acceso o continuar tu sesión.")
+            with st.form("form_mail"):
+                mail_input = st.text_input("Mail")
+                continuar = st.form_submit_button("Continuar", use_container_width=True)
+            if continuar and mail_input.strip():
+                mail_limpio = mail_input.strip().lower()
+                estado = _estado_mail(mail_limpio)
+                if estado == "nuevo":
+                    _crear_solicitud(mail_limpio)
+                st.session_state.mail_en_proceso = mail_limpio
                 st.rerun()
-            else:
-                st.error("Usuario o clave incorrectos.")
+
+        else:
+            mail_actual = st.session_state.mail_en_proceso
+            estado_actual = _estado_mail(mail_actual)
+
+            if estado_actual == "pendiente":
+                st.info(
+                    f"📩 Solicitud registrada para **{mail_actual}**. "
+                    "Queda pendiente de aprobación -- te avisamos por WhatsApp "
+                    "cuando esté lista."
+                )
+                if st.button("← Usar otro mail"):
+                    st.session_state.mail_en_proceso = None
+                    st.rerun()
+
+            elif estado_actual == "sin_clave":
+                st.success(f"✅ **{mail_actual}** ya está aprobado. Creá tu clave para terminar.")
+                with st.form("form_crear_clave"):
+                    clave_nueva = st.text_input("Elegí una clave", type="password")
+                    clave_repetida = st.text_input("Repetila", type="password")
+                    crear = st.form_submit_button("Crear clave e ingresar", use_container_width=True)
+                if crear:
+                    if not clave_nueva:
+                        st.error("La clave no puede estar vacía.")
+                    elif clave_nueva != clave_repetida:
+                        st.error("Las claves no coinciden.")
+                    else:
+                        _establecer_password(mail_actual, clave_nueva)
+                        st.session_state.autenticado = True
+                        st.session_state.usuario_actual = mail_actual
+                        if cookies.ready():
+                            cookies["auth_user"] = mail_actual
+                            cookies.save()
+                        st.rerun()
+
+            elif estado_actual == "activo":
+                st.caption(f"Ingresá la clave de **{mail_actual}**.")
+                with st.form("form_clave_login"):
+                    clave_input = st.text_input("Clave", type="password")
+                    ingresar = st.form_submit_button("Ingresar", use_container_width=True)
+                if ingresar:
+                    if _verificar_credenciales(mail_actual, clave_input):
+                        st.session_state.autenticado = True
+                        st.session_state.usuario_actual = mail_actual
+                        if cookies.ready():
+                            cookies["auth_user"] = mail_actual
+                            cookies.save()
+                        st.rerun()
+                    else:
+                        st.error("Clave incorrecta.")
+                if st.button("← Usar otro mail"):
+                    st.session_state.mail_en_proceso = None
+                    st.rerun()
 
         st.markdown(
             f"""
@@ -511,7 +615,7 @@ if not es_admin and not st.session_state.autenticado:
                    target="_blank" style="text-decoration:none;">
                     <div style="display:inline-flex; align-items:center; gap:8px; background:#161b26;
                          border:1px solid #2a2f3d; border-radius:8px; padding:10px 18px; color:#e5e7eb; font-weight:600; font-size:14px;">
-                        💬 Pedir acceso por WhatsApp
+                        💬 Avisar por WhatsApp que ya pedí acceso
                     </div>
                 </a>
             </div>
@@ -545,39 +649,64 @@ if es_admin:
             )
 
         st.divider()
-        st.markdown("**👥 Gestión de usuarios autorizados**")
+        st.markdown("**👥 Solicitudes de acceso**")
+        st.caption(
+            "Vos solo aprobás el MAIL -- la clave la elige cada persona la "
+            "primera vez que vuelve a entrar después de ser aprobada. Nunca "
+            "vas a ver ninguna clave acá."
+        )
 
-        usuarios_actuales = _leer_usuarios()
+        solicitudes_actuales = _leer_solicitudes()
 
-        col_alta, col_lista = st.columns([1, 1])
+        pendientes = {m: d for m, d in solicitudes_actuales.items() if d.get("estado") == "pendiente"}
+        aprobados_sin_clave = {
+            m: d for m, d in solicitudes_actuales.items()
+            if d.get("estado") == "aprobado" and d.get("password_hash") is None
+        }
+        activos = {
+            m: d for m, d in solicitudes_actuales.items()
+            if d.get("estado") == "aprobado" and d.get("password_hash") is not None
+        }
 
-        with col_alta:
-            st.caption("Agregar / actualizar cuenta")
-            with st.form("form_alta_usuario", clear_on_submit=True):
-                nuevo_usuario = st.text_input("Usuario nuevo")
-                nueva_clave = st.text_input("Clave", type="password")
-                agregar = st.form_submit_button("➕ Agregar")
-            if agregar:
-                if nuevo_usuario and nueva_clave:
-                    _agregar_usuario(nuevo_usuario.strip(), nueva_clave)
-                    st.success(f"Usuario '{nuevo_usuario.strip()}' agregado/actualizado.")
-                    st.rerun()
-                else:
-                    st.warning("Completá usuario y clave.")
+        col_pend, col_activ = st.columns(2)
 
-        with col_lista:
-            st.caption(f"Cuentas activas ({len(usuarios_actuales)})")
-            if not usuarios_actuales:
-                st.caption("Todavía no hay usuarios cargados.")
+        with col_pend:
+            st.caption(f"⏳ Pendientes de aprobar ({len(pendientes)})")
+            if not pendientes:
+                st.caption("Nada pendiente.")
             else:
-                for nombre in list(usuarios_actuales.keys()):
-                    col_nombre, col_borrar = st.columns([3, 1])
-                    with col_nombre:
-                        st.caption(f"• {nombre}")
-                    with col_borrar:
-                        if st.button("🗑️", key=f"borrar_{nombre}"):
-                            _eliminar_usuario(nombre)
+                for mail in list(pendientes.keys()):
+                    col_m, col_ap, col_rc = st.columns([3, 1, 1])
+                    with col_m:
+                        st.caption(mail)
+                    with col_ap:
+                        if st.button("✅", key=f"aprobar_{mail}"):
+                            _aprobar_solicitud(mail)
                             st.rerun()
+                    with col_rc:
+                        if st.button("🗑️", key=f"rechazar_{mail}"):
+                            _eliminar_solicitud(mail)
+                            st.rerun()
+
+            if aprobados_sin_clave:
+                st.caption(f"✅ Aprobados, esperando que creen su clave ({len(aprobados_sin_clave)})")
+                for mail in aprobados_sin_clave:
+                    st.caption(f"• {mail}")
+
+        with col_activ:
+            st.caption(f"🟢 Cuentas activas ({len(activos)})")
+            if not activos:
+                st.caption("Todavía ninguna cuenta activa.")
+            else:
+                for mail in list(activos.keys()):
+                    col_m, col_rv = st.columns([3, 1])
+                    with col_m:
+                        st.caption(mail)
+                    with col_rv:
+                        if st.button("🗑️", key=f"revocar_{mail}"):
+                            _eliminar_solicitud(mail)
+                            st.rerun()
+
 
 st.markdown(
     f"""
