@@ -486,7 +486,7 @@ if not es_admin and not st.session_state.autenticado:
         )
 
         st.subheader("🔐 Acceso restringido")
-        st.caption("Dashboard privado. Si necesitás una cuenta, escribile al administrador.")
+        st.caption("Dashboard gratuito x tiempo limitado. Si necesitás una cuenta, escribile al administrador.")
 
         with st.form("form_login"):
             usuario_input = st.text_input("Usuario")
