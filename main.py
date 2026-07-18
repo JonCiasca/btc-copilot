@@ -145,7 +145,7 @@ _inyectar_estilos()
 # cambie (nueva capa, fix, ajuste de UI), no cada vez que llega un
 # dato nuevo de Binance/Deribit.
 VERSION_APP = "V 0.1.12"
-FECHA_ULTIMA_ACTUALIZACION = "17/07/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
+FECHA_ULTIMA_ACTUALIZACION = "18/07/2026, sin Funding Binance"  # dd/mm/aaaa — actualizar a mano en cada deploy
 
 # ----------------------------------
 # LOGO (embebido en base64 -- autocontenido en el archivo, no depende
@@ -203,6 +203,21 @@ st.session_state.ciclos_transcurridos += 1
 # ----------------------------------
 
 PROXY_URL = "https://btccopilot-beta1-0.onrender.com"
+
+# ----------------------------------
+# INTERRUPTOR: FUNDING + OPEN INTEREST DE BINANCE — DADOS DE BAJA
+# ----------------------------------
+# Estos dos endpoints (premiumIndex y openInterest de Binance Futures)
+# venían siendo la fuente principal de bans -1003 que tiraban abajo
+# el Copilot completo. Mientras esté en False, la app NO les pide más
+# datos (ni un solo request): Funding muestra "dado de baja", OI
+# Binance muestra N/D y el OI combinado usa solo Bybit (que tiene su
+# propio rate-limit independiente y sigue vivo).
+#
+# Para reactivarlos el día que se resuelva el tema del ban, poner
+# True acá y el mismo flag en app.py (el proxy de Render) -- son dos
+# repos distintos, hay que tocar los dos.
+BINANCE_FUNDING_OI_ACTIVO = False
 
 # ----------------------------------
 # CONTADOR DE SESIONES (visible solo en panel de admin oculto)
@@ -960,6 +975,8 @@ def obtener_tendencia(intervalo):
 
 def obtener_funding():
     """Pide el funding rate de Binance Futures vía nuestro proxy en Render."""
+    if not BINANCE_FUNDING_OI_ACTIVO:
+        return None  # dado de baja -- ver interruptor arriba, no se pide más
     try:
         url = f"{PROXY_URL}/premiumIndex?symbol=BTCUSDT"
         respuesta = requests.get(url, timeout=10)
@@ -980,6 +997,8 @@ def obtener_funding():
 
 def obtener_open_interest():
     """Pide el Open Interest de Binance Futures vía nuestro proxy en Render."""
+    if not BINANCE_FUNDING_OI_ACTIVO:
+        return None  # dado de baja -- ver interruptor arriba, no se pide más
     try:
         url = f"{PROXY_URL}/openInterest?symbol=BTCUSDT"
         respuesta = requests.get(url, timeout=10)
@@ -3864,6 +3883,8 @@ with tab_dashboard:
                 st.caption("⏳ Último dato conocido, este refresh no pudo actualizar.")
         else:
             st.metric("Funding", "N/D")
+            if not BINANCE_FUNDING_OI_ACTIVO:
+                st.caption("🔇 Dado de baja temporalmente (protección anti-ban de Binance).")
             ban_restante = st.session_state.get("ban_restante_futures")
             if ban_restante:
                 minutos = ban_restante // 60
@@ -3886,6 +3907,8 @@ with tab_dashboard:
 
         with col_oi1:
             render_metrica_oi("OI Binance", resultado_oi_binance)
+            if not BINANCE_FUNDING_OI_ACTIVO:
+                st.caption("🔇 Dado de baja temporalmente (protección anti-ban de Binance).")
 
         with col_oi2:
             render_metrica_oi("OI Bybit", resultado_oi_bybit)
