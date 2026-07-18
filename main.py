@@ -144,8 +144,8 @@ _inyectar_estilos()
 # actualizá FECHA_ULTIMA_ACTUALIZACION a mano cada vez que el CÓDIGO
 # cambie (nueva capa, fix, ajuste de UI), no cada vez que llega un
 # dato nuevo de Binance/Deribit.
-VERSION_APP = "V 0.1.2"
-FECHA_ULTIMA_ACTUALIZACION = "14/07/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
+VERSION_APP = "V 0.1.12"
+FECHA_ULTIMA_ACTUALIZACION = "17/07/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
 
 # ----------------------------------
 # LOGO (embebido en base64 -- autocontenido en el archivo, no depende
@@ -539,7 +539,7 @@ if not es_admin and not st.session_state.autenticado:
             unsafe_allow_html=True,
         )
 
-        st.subheader("🔐 Acceso restringido")
+        st.subheader("✅ Acceso Gratuito")
 
         # Flujo por MAIL, en un solo campo de entrada: según en qué
         # estado esté ese mail (nuevo / pendiente / aprobado sin clave
