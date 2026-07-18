@@ -90,7 +90,15 @@ def _inyectar_estilos():
     }
 
     /* --- Botones (Normal/Scalp/Microscalp, Multi-Timeframe, capas) --- */
+    /* FIX (pedido del usuario): el borde se estiraba al ancho completo
+    de la columna en vez de ajustarse al texto -- quedaba un "marco
+    grande" suelto alrededor de la palabra, y en filas angostas
+    (Multi-Timeframe) esos marcos se solapaban con el texto de al lado.
+    width:auto + display:inline-block hace que el botón (y su borde)
+    se ajusten al contenido real, no al contenedor. */
     .stButton > button {
+        width: auto;
+        display: inline-block;
         border-radius: 8px;
         border: 1px solid #2a2f3d;
         background: #161b26;
@@ -136,8 +144,8 @@ _inyectar_estilos()
 # actualizá FECHA_ULTIMA_ACTUALIZACION a mano cada vez que el CÓDIGO
 # cambie (nueva capa, fix, ajuste de UI), no cada vez que llega un
 # dato nuevo de Binance/Deribit.
-VERSION_APP = "V 0.1.12"
-FECHA_ULTIMA_ACTUALIZACION = "17/07/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
+VERSION_APP = "V 0.1.2"
+FECHA_ULTIMA_ACTUALIZACION = "14/07/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
 
 # ----------------------------------
 # LOGO (embebido en base64 -- autocontenido en el archivo, no depende
@@ -531,7 +539,7 @@ if not es_admin and not st.session_state.autenticado:
             unsafe_allow_html=True,
         )
 
-        st.subheader("✅ Acceso Gratuito")
+        st.subheader("🔐 Acceso restringido")
 
         # Flujo por MAIL, en un solo campo de entrada: según en qué
         # estado esté ese mail (nuevo / pendiente / aprobado sin clave
