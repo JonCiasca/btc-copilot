@@ -145,7 +145,7 @@ _inyectar_estilos()
 # cambie (nueva capa, fix, ajuste de UI), no cada vez que llega un
 # dato nuevo de Binance/Deribit.
 VERSION_APP = "V 0.1.13"
-FECHA_ULTIMA_ACTUALIZACION = "22/07/2026, fix motor de predicciones"  # dd/mm/aaaa — actualizar a mano en cada deploy
+FECHA_ULTIMA_ACTUALIZACION = "24/07/2026, fix motor de predicciones"  # dd/mm/aaaa — actualizar a mano en cada deploy
 
 # ----------------------------------
 # LOGO (embebido en base64 -- autocontenido en el archivo, no depende
@@ -190,7 +190,15 @@ if "ciclos_transcurridos" not in st.session_state:
 
 en_periodo_arranque = st.session_state.ciclos_transcurridos < CICLOS_ARRANQUE
 
-intervalo_refresh = 8000 if en_periodo_arranque else 15000
+# REFRESH A 5s (antes 15s): con el hub WebSocket en el proxy (ws_hub
+# en app.py), cada refresh se responde desde la cache en memoria del
+# proxy -- Binance ya NO recibe pedidos por esto, así que refrescar
+# más seguido no suma peso ni riesgo de ban -1003. El límite ahora es
+# solo el re-render de Streamlit (todo el script corre de nuevo en
+# cada ciclo): 5s es el punto justo entre sentirse "en vivo" y no
+# recargar la UI. No bajar de 3s: el propio rerun de Streamlit +
+# latencia de red ya come ~1-2s y se empiezan a encimar ciclos.
+intervalo_refresh = 8000 if en_periodo_arranque else 5000
 
 st_autorefresh(interval=intervalo_refresh, key="btc_refresh")
 
