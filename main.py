@@ -144,8 +144,8 @@ _inyectar_estilos()
 # actualizá FECHA_ULTIMA_ACTUALIZACION a mano cada vez que el CÓDIGO
 # cambie (nueva capa, fix, ajuste de UI), no cada vez que llega un
 # dato nuevo de Binance/Deribit.
-VERSION_APP = "V 0.1.13"
-FECHA_ULTIMA_ACTUALIZACION = "24/07/2026, fix motor de predicciones"  # dd/mm/aaaa — actualizar a mano en cada deploy
+VERSION_APP = "V 0.1.14"
+FECHA_ULTIMA_ACTUALIZACION = "24/07/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
 
 # ----------------------------------
 # LOGO (embebido en base64 -- autocontenido en el archivo, no depende
@@ -190,15 +190,18 @@ if "ciclos_transcurridos" not in st.session_state:
 
 en_periodo_arranque = st.session_state.ciclos_transcurridos < CICLOS_ARRANQUE
 
-# REFRESH A 5s (antes 15s): con el hub WebSocket en el proxy (ws_hub
-# en app.py), cada refresh se responde desde la cache en memoria del
-# proxy -- Binance ya NO recibe pedidos por esto, así que refrescar
-# más seguido no suma peso ni riesgo de ban -1003. El límite ahora es
-# solo el re-render de Streamlit (todo el script corre de nuevo en
-# cada ciclo): 5s es el punto justo entre sentirse "en vivo" y no
-# recargar la UI. No bajar de 3s: el propio rerun de Streamlit +
-# latencia de red ya come ~1-2s y se empiezan a encimar ciclos.
-intervalo_refresh = 8000 if en_periodo_arranque else 5000
+# REFRESH GENERAL A 10s + PRECIO EN VIVO POR FRAGMENT (2s):
+# el delay de 1-2s que se veía en cada refresh es el costo de
+# re-ejecutar TODO main.py (5.000+ líneas, gráficos Plotly). Ese costo
+# no baja pidiendo datos más rápido -- se esquiva NO re-ejecutando
+# todo: el panel de precio ahora es un @st.fragment(run_every="2s")
+# (ver tab_dashboard) que se rerenderiza solo, sin tocar el resto.
+# Con el precio ya "en vivo", el refresh completo puede quedarse en
+# 10s tranquilo: velas, gamma y niveles no cambian más rápido que eso
+# de forma operativamente útil, y la página "parpadea" la mitad de lo
+# que parpadeaba a 5s. Gracias al hub WS del proxy, nada de esto
+# genera pedidos a Binance.
+intervalo_refresh = 8000 if en_periodo_arranque else 10000
 
 st_autorefresh(interval=intervalo_refresh, key="btc_refresh")
 
@@ -225,7 +228,11 @@ PROXY_URL = "https://btccopilot-beta1-0.onrender.com"
 # Para reactivarlos el día que se resuelva el tema del ban, poner
 # True acá y el mismo flag en app.py (el proxy de Render) -- son dos
 # repos distintos, hay que tocar los dos.
-BINANCE_FUNDING_OI_ACTIVO = False
+# REACTIVADO (antes False por los bans -1003): con el hub WebSocket en
+# el proxy, el funding llega por stream push (cero peso REST) y el OI
+# lo pollea el proxy UNA vez cada 30s para todas las sesiones juntas.
+# El riesgo de ban por estos dos datos quedó prácticamente en cero.
+BINANCE_FUNDING_OI_ACTIVO = True
 
 # ----------------------------------
 # CONTADOR DE SESIONES (visible solo en panel de admin oculto)
@@ -2705,40 +2712,54 @@ def detectar_absorcion(df, lookback=20, umbral_volumen=1.3, umbral_rango=0.75):
 with tab_dashboard:
 
     # ----------------------------------
-# DATOS BTC (ticker)
-# ----------------------------------
+    # DATOS BTC (ticker) — EN VIVO (fragment)
+    # ----------------------------------
+    # @st.fragment(run_every=...) rerenderiza SOLO este bloque cada 2s,
+    # SIN correr el script completo de nuevo: el precio se siente "en
+    # vivo" mientras el resto del dashboard (gráficos, gamma, etc.)
+    # refresca a su propio ritmo con el autorefresh general. Esta es la
+    # respuesta al delay de 1-2s que se veía en cada refresh completo:
+    # ese delay es el costo de re-ejecutar TODO main.py; acá solo se
+    # re-ejecutan estas ~20 líneas.
+    # El pedido va al proxy, que responde desde la cache del hub WS en
+    # memoria (tick a tick) -- pedir cada 2s NO genera ningún pedido a
+    # Binance, así que se puede sostener sin riesgo alguno.
 
-    try:
-        ticker = obtener_ticker()
-        if "error" in ticker:
-            raise ConnectionError(ticker["error"])
+    @st.fragment(run_every="2s")
+    def _panel_precio_vivo(modo_actual=modo):
+        try:
+            ticker = obtener_ticker()
+            if "error" in ticker:
+                raise ConnectionError(ticker["error"])
 
-        precio = float(ticker["lastPrice"])
-        cambio_24h = float(ticker["priceChangePercent"])
-        volumen = float(ticker["volume"])
+            precio_vivo = float(ticker["lastPrice"])
+            cambio_24h = float(ticker["priceChangePercent"])
+            volumen = float(ticker["volume"])
 
-        c1, c2, c3 = st.columns(3)
+            c1, c2, c3 = st.columns(3)
 
-        with c1:
-            st.metric("Precio BTC", f"${precio:,.2f}")
+            with c1:
+                st.metric("Precio BTC", f"${precio_vivo:,.2f}")
 
-        with c2:
-            if modo in ("Scalp", "Microscalp"):
-                st.metric("Cambio 24h", f"{cambio_24h:+.2f}%", 
-                         help="En Scalp/Microscalp se muestra 24h por simplicidad (1H se calcula más abajo)")
-            else:
-                st.metric("Cambio 24h", f"{cambio_24h:+.2f}%")
+            with c2:
+                if modo_actual in ("Scalp", "Microscalp"):
+                    st.metric("Cambio 24h", f"{cambio_24h:+.2f}%",
+                             help="En Scalp/Microscalp se muestra 24h por simplicidad (1H se calcula más abajo)")
+                else:
+                    st.metric("Cambio 24h", f"{cambio_24h:+.2f}%")
 
-        with c3:
-            st.metric("Volumen BTC", f"{volumen:,.0f}")
+            with c3:
+                st.metric("Volumen BTC", f"{volumen:,.0f}")
 
-        st.caption("🟢 Conectado al mercado")
+            st.caption("🟢 Conectado al mercado — precio en vivo")
 
-    except Exception as e:
-        mostrar_estado_no_disponible(
-            detalle_tecnico=str(e),
-            contexto="No se pudo obtener el precio de BTC (vía proxy).",
-        )
+        except Exception as e:
+            mostrar_estado_no_disponible(
+                detalle_tecnico=str(e),
+                contexto="No se pudo obtener el precio de BTC (vía proxy).",
+            )
+
+    _panel_precio_vivo()
  
     # ----------------------------------
     # FETCH ÚNICO DE VELAS POR TIMEFRAME
