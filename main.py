@@ -13,6 +13,7 @@ from streamlit_cookies_manager import EncryptedCookieManager
 import market_bias as mb
 import market_projection as mproj
 import iv_structure as ivs
+import sesiones as ses
 
 # ----------------------------------
 # CONFIG
@@ -144,7 +145,7 @@ _inyectar_estilos()
 # actualizá FECHA_ULTIMA_ACTUALIZACION a mano cada vez que el CÓDIGO
 # cambie (nueva capa, fix, ajuste de UI), no cada vez que llega un
 # dato nuevo de Binance/Deribit.
-VERSION_APP = "V 0.1.14"
+VERSION_APP = "V 0.1.15"
 FECHA_ULTIMA_ACTUALIZACION = "24/07/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
 
 # ----------------------------------
@@ -764,8 +765,9 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-tab_dashboard, tab_opciones, tab_predicciones = st.tabs(
-    ["📊 Dashboard", "📐 Opciones / Derivados", "🔎 Visión Analítica"]
+tab_dashboard, tab_opciones, tab_predicciones, tab_sesiones, tab_macro = st.tabs(
+    ["📊 Dashboard", "📐 Opciones / Derivados", "🔎 Visión Analítica",
+     "🌊 Sesiones / Liquidez", "🌍 Macro & Geo"]
 )
 
 with tab_dashboard:
@@ -4249,6 +4251,18 @@ with tab_opciones:
     )
     st.info(resultado_bias["lectura"])
 
+    # VEREDICTO OPERATIVO (pedido del usuario): dirección + confianza
+    # asociadas de forma explícita y traducidas a decisión de riesgo:
+    # OPERABLE / PRECAUCIÓN / INOPERABLE, con su tip de gatillo.
+    veredicto = resultado_bias.get("veredicto")
+    if veredicto:
+        if veredicto["estado"] == "OPERABLE":
+            st.success(f"**{veredicto['titulo']}**\n\n{veredicto['tip']}")
+        elif veredicto["estado"] == "PRECAUCION":
+            st.warning(f"**{veredicto['titulo']}**\n\n{veredicto['tip']}")
+        else:
+            st.error(f"**{veredicto['titulo']}**\n\n{veredicto['tip']}")
+
     with st.expander("Desglose del bias"):
         for nombre, puntos, activo, detalle in resultado_bias["componentes"]:
             estado = "✅" if activo else "⚠️ inactivo"
@@ -5358,6 +5372,191 @@ with tab_predicciones:
         )
         for idx, pred in enumerate(predicciones_data[:7]):
             _renderizar_prediccion(pred, df_15m, idx)
+
+# ----------------------------------
+# 🌊 SOLAPA 4: SESIONES / TOMA DE LIQUIDEZ
+# ----------------------------------
+# Niveles que van dejando las sesiones (Asia / Europa / NY): apertura,
+# cierre, alto y bajo. Detección de barridos (el precio cruza el
+# nivel, absorbe la liquidez que descansaba ahí y el cierre vuelve) y
+# medición de la reacción. Motor en sesiones.py; acá solo se muestra.
+
+with tab_sesiones:
+    st.subheader(
+        "🌊 Sesiones / Toma de Liquidez",
+        help=(
+            "Cada sesión deja niveles de referencia (apertura, cierre, alto, "
+            "bajo). Cuando el precio vuelve a uno de esos niveles puede ABSORBER "
+            "la liquidez que descansa ahí (barrido) y REACCIONAR. Un nivel "
+            "'sin mitigar' todavía no fue barrido: es liquidez pendiente que "
+            "suele actuar de imán. La reacción esperada depende del régimen "
+            "gamma (próxima etapa: confluencia con Deribit)."
+        ),
+    )
+
+    df_ses = obtener_velas("5m", 500)  # ~41hs -> sesiones de hoy y ayer
+
+    if df_ses is None or df_ses.empty:
+        st.warning("Sin velas suficientes para construir los niveles de sesión en este ciclo.")
+    else:
+        resumen_ses = ses.resumen(df_ses)
+        precio_ses = resumen_ses["precio_actual"]
+        niveles_ses = resumen_ses["niveles"]
+        eventos_ses = resumen_ses["eventos_barrido"]
+        cercanos_ses = resumen_ses["niveles_sin_mitigar_cercanos"]
+
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.metric("Niveles mapeados", len(niveles_ses))
+        with c2:
+            st.metric("Sin mitigar (± $1.500)", len(cercanos_ses))
+        with c3:
+            st.metric("Barridos detectados", len(eventos_ses))
+
+        # --- Liquidez pendiente más cercana (lo operable AHORA) ---
+        st.markdown("**🎯 Liquidez pendiente más cercana al precio**")
+        if cercanos_ses:
+            df_cerca = pd.DataFrame([
+                {
+                    "Sesión": n["sesion"],
+                    "Fecha": n["fecha"],
+                    "Tipo": n["tipo"].capitalize(),
+                    "Nivel": f"${n['precio']:,.0f}",
+                    "Distancia": f"{n['precio'] - precio_ses:+,.0f} USD",
+                }
+                for n in cercanos_ses
+            ])
+            st.dataframe(df_cerca, use_container_width=True, hide_index=True)
+            st.caption(
+                "Niveles NO barridos a menos de $1.500 del precio, ordenados por "
+                "cercanía. Lectura: son imanes de liquidez — si el precio los "
+                "toca, mirar la reacción antes de decidir (barrido y vuelta = "
+                "posible fade; ruptura con cierre del otro lado = continuación)."
+            )
+        else:
+            st.info("No hay niveles sin mitigar a menos de $1.500 — el precio ya limpió la liquidez cercana de las últimas sesiones.")
+
+        # --- Barridos recientes con su reacción ---
+        st.markdown("**⚡ Barridos detectados (sesiones recientes)**")
+        if eventos_ses:
+            eventos_orden = sorted(
+                eventos_ses, key=lambda e: e["nivel"].get("ts_barrido") or "", reverse=True
+            )
+            for ev in eventos_orden[:6]:
+                n = ev["nivel"]
+                icono = "✅ reaccionó" if n["reacciono"] else "◽ reacción débil"
+                st.caption(
+                    f"🌊 Barrido del **{n['tipo'].upper()} de {n['sesion']}** ({n['fecha']}) "
+                    f"en ${n['precio']:,.0f} — lado {ev['lado_barrido']}, reacción "
+                    f"**{ev['direccion_reaccion']}** de {n['reaccion_usd']:,.0f} USD {icono}"
+                )
+        else:
+            st.caption("Sin barridos detectados en la ventana actual.")
+
+        with st.expander("Todos los niveles de sesión mapeados"):
+            df_todos = pd.DataFrame([
+                {
+                    "Sesión": n["sesion"], "Fecha": n["fecha"],
+                    "Tipo": n["tipo"].capitalize(), "Nivel": round(n["precio"], 1),
+                    "Barrido": "sí" if n["barrido"] else "no",
+                    "Reacción USD": n["reaccion_usd"] if n["barrido"] else "",
+                }
+                for n in niveles_ses
+            ])
+            st.dataframe(df_todos, use_container_width=True, hide_index=True)
+
+        st.caption(
+            "⚠️ Ventanas de sesión en UTC: Asia 00-08, Europa 07-16, NY 12:30-21. "
+            "Detección sobre velas 5m de ~41hs (hoy + ayer). La confluencia con "
+            "régimen gamma (short/long) para calificar cada reacción es la "
+            "próxima etapa de esta solapa."
+        )
+
+# ----------------------------------
+# 🌍 SOLAPA 5: MACRO & GEOPOLÍTICA
+# ----------------------------------
+# Calendario económico (ForexFactory semanal, gratis) + titulares de
+# noticias (RSS cripto + mundo) servidos por el proxy con cache — el
+# dashboard no le pega a ninguna fuente externa directamente.
+
+with tab_macro:
+    st.subheader(
+        "🌍 Macro & Geopolítica",
+        help=(
+            "Eventos económicos de la semana (con impacto esperado) y titulares "
+            "recientes. Objetivo: saber QUÉ puede mover el mercado hoy antes de "
+            "abrir una operación — un dato de alto impacto a minutos de "
+            "publicarse es razón suficiente para esperar."
+        ),
+    )
+
+    @st.cache_data(ttl=600, show_spinner=False)
+    def _obtener_calendario():
+        try:
+            r = requests.get(f"{PROXY_URL}/calendario", timeout=12)
+            return r.json().get("eventos", [])
+        except Exception:
+            return []
+
+    @st.cache_data(ttl=600, show_spinner=False)
+    def _obtener_noticias():
+        try:
+            r = requests.get(f"{PROXY_URL}/noticias", timeout=12)
+            return r.json().get("noticias", [])
+        except Exception:
+            return []
+
+    eventos_cal = _obtener_calendario()
+    noticias = _obtener_noticias()
+
+    st.markdown("**📅 Calendario económico de la semana (impacto alto y medio)**")
+    if eventos_cal:
+        filas_cal = []
+        for e in eventos_cal:
+            impacto = e.get("impact", "")
+            if impacto not in ("High", "Medium"):
+                continue
+            try:
+                hora_local = (
+                    pd.to_datetime(e.get("date"))
+                    .tz_convert("America/Argentina/Buenos_Aires")
+                    .strftime("%a %d %H:%M")
+                )
+            except Exception:
+                hora_local = str(e.get("date", ""))[:16]
+            filas_cal.append({
+                "Hora (ARG)": hora_local,
+                "Impacto": "🔴 Alto" if impacto == "High" else "🟠 Medio",
+                "País": e.get("country", ""),
+                "Evento": e.get("title", ""),
+                "Previsión": e.get("forecast", "") or "—",
+                "Previo": e.get("previous", "") or "—",
+            })
+        if filas_cal:
+            st.dataframe(pd.DataFrame(filas_cal), use_container_width=True, hide_index=True)
+            st.caption(
+                "Fuente: calendario semanal de ForexFactory (gratuito). Regla "
+                "práctica: evitar abrir posiciones nuevas en los ±15 minutos de "
+                "un evento 🔴 de USD — el barrido de liquidez post-dato es de "
+                "los movimientos más violentos y menos predecibles."
+            )
+        else:
+            st.info("Sin eventos de impacto alto/medio restantes esta semana.")
+    else:
+        st.info("Calendario no disponible en este ciclo (el proxy no pudo obtenerlo).")
+
+    st.markdown("**📰 Titulares recientes (cripto + mundo)**")
+    if noticias:
+        for nt in noticias[:12]:
+            fuente = nt.get("fuente", "")
+            st.caption(f"• [{nt.get('titulo','(sin título)')}]({nt.get('link','')})  — *{fuente}*")
+        st.caption(
+            "Fuentes: CoinDesk y Cointelegraph (cripto), BBC World (geopolítica). "
+            "Titulares con cache de ~15 min en el proxy."
+        )
+    else:
+        st.info("Noticias no disponibles en este ciclo (el proxy no pudo obtenerlas).")
+
 
 # ----------------------------------
 # FOOTER DE MANTENIMIENTO (changelog manual del CÓDIGO)
