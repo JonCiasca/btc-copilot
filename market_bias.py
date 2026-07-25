@@ -237,9 +237,67 @@ def calcular_market_bias(
         icono = "🟢🟢" if bias > 0 else "🔴🔴"
         lectura = f"{icono} Sesgo {direccion} fuerte ({bias:+d}) — {confianza}% de confianza, mayoría de familias alineadas."
 
+    # ----------------------------------
+    # VEREDICTO OPERATIVO (pedido del usuario): asociar la confianza a
+    # la dirección de forma explícita y traducir el número a una
+    # decisión de riesgo -- ¿esto se opera, se opera con cuidado, o
+    # directamente NO se opera? Tres estados, sin grises ambiguos:
+    #
+    #   OPERABLE    -> sesgo claro + familias de acuerdo: buscar
+    #                  gatillo A FAVOR del sesgo. Nunca es "entrar ya":
+    #                  es "el contexto acompaña, esperá tu gatillo".
+    #   PRECAUCIÓN  -> hay dirección pero incompleta: solo con
+    #                  confirmación extra y tamaño reducido.
+    #   INOPERABLE  -> señales mezcladas: no hay ventaja estadística
+    #                  direccional. La mejor operación es no operar
+    #                  (o esperar una toma de liquidez con reacción,
+    #                  que es un gatillo por sí misma).
+    # ----------------------------------
+    direccion = "alcista" if bias > 0 else ("bajista" if bias < 0 else None)
+    favorece = "largos" if bias > 0 else "cortos"
+
+    if direccion and abs(bias) >= 40 and confianza >= 55:
+        veredicto = {
+            "estado": "OPERABLE",
+            "direccion": direccion,
+            "confianza": confianza,
+            "titulo": f"✅ OPERABLE — sesgo {direccion} con continuación, {confianza}% de confianza",
+            "tip": (
+                f"Contexto favorece {favorece}. Gatillo sugerido: retroceso a un nivel "
+                f"defendido (flip/imán) o barrido de liquidez con reacción A FAVOR del "
+                f"sesgo. Evitar contra-tendencia; el stop del lado protegido del nivel."
+            ),
+        }
+    elif direccion and abs(bias) >= 15 and confianza >= 40:
+        veredicto = {
+            "estado": "PRECAUCION",
+            "direccion": direccion,
+            "confianza": confianza,
+            "titulo": f"🟡 PRECAUCIÓN — sesgo {direccion} incompleto, {confianza}% de confianza",
+            "tip": (
+                f"Hay inclinación {direccion} pero sin acuerdo pleno de familias. Solo "
+                f"operar con confirmación extra (absorción confirmada, reacción en nivel) "
+                f"y tamaño reducido. Si el gatillo no aparece limpio, dejarla pasar."
+            ),
+        }
+    else:
+        veredicto = {
+            "estado": "INOPERABLE",
+            "direccion": direccion,
+            "confianza": confianza,
+            "titulo": f"⛔ INOPERABLE — sin ventaja direccional (bias {bias:+d}, confianza {confianza}%)",
+            "tip": (
+                "Señales mezcladas o sin dato suficiente: no abrir posición por sesgo. "
+                "Escenario típico de rango/trampa. Qué esperar para reevaluar: una toma "
+                "de liquidez con reacción en nivel de sesión, o que 3+ familias se "
+                "realineen del mismo lado."
+            ),
+        }
+
     return {
         "bias": bias,
         "confianza": confianza,
         "componentes": componentes,
         "lectura": lectura,
+        "veredicto": veredicto,
     }
