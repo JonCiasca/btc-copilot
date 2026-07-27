@@ -14,6 +14,8 @@ import market_bias as mb
 import market_projection as mproj
 import iv_structure as ivs
 import sesiones as ses
+import liquidez_mapa as liqm
+import resumen_diario as rdia
 
 # ----------------------------------
 # CONFIG
@@ -145,8 +147,8 @@ _inyectar_estilos()
 # actualizá FECHA_ULTIMA_ACTUALIZACION a mano cada vez que el CÓDIGO
 # cambie (nueva capa, fix, ajuste de UI), no cada vez que llega un
 # dato nuevo de Binance/Deribit.
-VERSION_APP = "V 0.1.15"
-FECHA_ULTIMA_ACTUALIZACION = "24/07/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
+VERSION_APP = "V 0.1.16"
+FECHA_ULTIMA_ACTUALIZACION = "27/07/2026"  # dd/mm/aaaa — actualizar a mano en cada deploy
 
 # ----------------------------------
 # LOGO (embebido en base64 -- autocontenido en el archivo, no depende
@@ -5413,6 +5415,22 @@ with tab_sesiones:
         with c3:
             st.metric("Barridos detectados", len(eventos_ses))
 
+        # --- Mapa visual de liquidez (lectura de un vistazo) ---
+        # Pendiente = liquidez sin liquidar/absorber, color e intensidad
+        # por probabilidad de interacción; gris punteado = ya barrido.
+        st.markdown("**🧲 Mapa de liquidez — barrida vs. pendiente**")
+        niveles_punt = liqm.puntuar_niveles(niveles_ses, precio_ses)
+        fig_liq = liqm.figura_liquidez(df_ses, niveles_punt, precio_ses)
+        st.plotly_chart(fig_liq, use_container_width=True, key="fig_liquidez_sesiones")
+        st.caption(
+            "Lectura rápida: líneas **sólidas gruesas** = top-3 de liquidez "
+            "pendiente por probabilidad de interacción (número a la derecha, "
+            "0-100: cercanía + tipo de nivel + recencia + clúster). Líneas "
+            "punteadas grises = liquidez ya obtenida/superada (mitigada). "
+            "La probabilidad es un ordenamiento heurístico de qué imán mirar "
+            "primero — no una probabilidad estadística calibrada."
+        )
+
         # --- Liquidez pendiente más cercana (lo operable AHORA) ---
         st.markdown("**🎯 Liquidez pendiente más cercana al precio**")
         if cercanos_ses:
@@ -5508,6 +5526,41 @@ with tab_macro:
 
     eventos_cal = _obtener_calendario()
     noticias = _obtener_noticias()
+
+    # --- 🧭 LECTURA DEL DÍA (resumen interpretado, ver resumen_diario.py) ---
+    # Traduce calendario + titulares a la pregunta operativa directa:
+    # qué puede mover BTC hoy, a qué hora y en qué dirección probable.
+    resumen_dia = rdia.generar_resumen(eventos_cal, noticias)
+
+    st.markdown("**🧭 Lectura del día — probables movimientos e impactos en BTC**")
+    with st.container(border=True):
+        for linea in resumen_dia["sintesis"]:
+            st.markdown(linea)
+
+    if resumen_dia["eventos_hoy"]:
+        with st.expander("📌 Detalle de los eventos de HOY y su lectura operativa"):
+            for e in resumen_dia["eventos_hoy"]:
+                estado = "⏳ pendiente" if e["pendiente"] else "✅ publicado"
+                icono = "🔴" if e["impacto"] == "High" else "🟠"
+                st.markdown(
+                    f"{icono} **{e['hora_arg']} ARG — {e['titulo']} ({e['pais']})** "
+                    f"· {estado} · previsión {e['prevision']} / previo {e['previo']}"
+                )
+                st.caption(e["lectura"])
+
+    sesgo_dia = resumen_dia["sesgo_titulares"]
+    if sesgo_dia["drivers"]:
+        with st.expander("📰 Qué titulares están empujando el sesgo"):
+            for d in sesgo_dia["drivers"]:
+                signo = "🟢" if d["aporte"] > 0 else "🔴"
+                st.caption(f"{signo} ({d['aporte']:+d}) {d['titulo']} — *{d['fuente']}*")
+
+    st.caption(
+        "⚠️ Interpretación heurística sobre el calendario y los titulares del "
+        "ciclo — orienta el contexto del día, no reemplaza la señal técnica. "
+        "El detalle crudo (calendario completo y titulares) sigue abajo."
+    )
+    st.divider()
 
     st.markdown("**📅 Calendario económico de la semana (impacto alto y medio)**")
     if eventos_cal:
