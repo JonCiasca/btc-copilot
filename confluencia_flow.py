@@ -308,47 +308,192 @@ def detectar_quiebre_en_zona_clave(df, niveles_clave, tolerancia_pct=TOLERANCIA_
     return None
 
 
-def evaluar_retest_vacio(df, quiebre, niveles_liquidez_soporte, niveles_liquidez_resistencia,
-                          estado_velocidad):
+VENTANA_IMPULSO_RECIENTE = 3
+VENTANA_IMPULSO_PREVIA = 3
+UMBRAL_ACELERACION = 0.05  # mismo umbral que calcular_velocidad_precio en main.py
+
+
+def _calcular_impulso_direccional(df, velas_recientes=VENTANA_IMPULSO_RECIENTE,
+                                   velas_previas=VENTANA_IMPULSO_PREVIA):
     """
+    Mismo cálculo que calcular_velocidad_precio() de main.py
+    (cambio % reciente vs. tramo previo, para saber si acelera o
+    desacelera), reimplementado acá adentro en vez de reusar la
+    variable global -- esa variable se calcula sobre el df "operativo"
+    general (puede ser 1m/5m según el modo activo), y Setup 2 trabaja
+    en 15m: mezclar escalas distintas es la misma clase de bug que ya
+    tuvimos con session_state. Auto-contenido, sin ese riesgo.
+
+    Devuelve (direccion, estado): direccion en {"alcista","bajista","neutral"}
+    según el signo del cambio reciente, estado en
+    {"acelerando","desacelerando","estable"}.
+    """
+    if df is None or len(df) < velas_recientes + velas_previas + 1:
+        return "neutral", "estable"
+
+    cierre = df["close"].values
+    tramo_reciente = cierre[-velas_recientes:]
+    tramo_previo = cierre[-(velas_recientes + velas_previas):-velas_recientes]
+
+    if tramo_reciente[0] == 0 or tramo_previo[0] == 0:
+        return "neutral", "estable"
+
+    cambio_reciente = (tramo_reciente[-1] - tramo_reciente[0]) / tramo_reciente[0] * 100
+    cambio_previo = (tramo_previo[-1] - tramo_previo[0]) / tramo_previo[0] * 100
+
+    aceleracion = abs(cambio_reciente) - abs(cambio_previo)
+    if aceleracion > UMBRAL_ACELERACION:
+        estado = "acelerando"
+    elif aceleracion < -UMBRAL_ACELERACION:
+        estado = "desacelerando"
+    else:
+        estado = "estable"
+
+    if cambio_reciente > 0:
+        direccion = "alcista"
+    elif cambio_reciente < 0:
+        direccion = "bajista"
+    else:
+        direccion = "neutral"
+
+    return direccion, estado
+
+
+def _detectar_ruptura_estructura(df):
+    """
+    Patrón de vela concreto pedido por Jon, además de (no en reemplazo
+    de) la lectura de impulso por aceleración: la vela CERRADA más
+    reciente rompe la estructura de la vela CERRADA anterior --
+
+    Caso bajista: vela actual bajista (cierra por debajo de su propia
+    apertura) Y cierra por debajo de la APERTURA y del MÍNIMO de la
+    vela anterior (que tiene que haber sido alcista) -- "supera la
+    apertura y el mínimo de la última vela a la alza".
+
+    Caso alcista: el espejo -- vela actual alcista que cierra por
+    encima de la apertura y el máximo de la última vela bajista.
+
+    Devuelve "bajista", "alcista" o None (sin ruptura de estructura).
+    """
+    if df is None or len(df) < 3:
+        return None
+
+    vela_actual = df.iloc[-2]   # última vela CERRADA
+    vela_previa = df.iloc[-3]   # la cerrada anterior a esa
+
+    actual_bajista = vela_actual["close"] < vela_actual["open"]
+    previa_alcista = vela_previa["close"] > vela_previa["open"]
+    if actual_bajista and previa_alcista:
+        if vela_actual["close"] < vela_previa["open"] and vela_actual["close"] < vela_previa["low"]:
+            return "bajista"
+
+    actual_alcista = vela_actual["close"] > vela_actual["open"]
+    previa_bajista = vela_previa["close"] < vela_previa["open"]
+    if actual_alcista and previa_bajista:
+        if vela_actual["close"] > vela_previa["open"] and vela_actual["close"] > vela_previa["high"]:
+            return "alcista"
+
+    return None
+
+
+UMBRAL_CONFIRMACION_TFS = 2  # de 3 (1m/3m/5m) -- mayoría, no unanimidad
+
+
+def evaluar_retest_vacio(df, quiebre, niveles_liquidez_soporte, niveles_liquidez_resistencia,
+                          df_1m, df_3m, df_5m):
+    """
+    df: velas de 15m (para "dónde está el precio" respecto del vacío --
+    mismo TF donde se detectó el quiebre).
     quiebre: dict devuelto por detectar_quiebre_en_zona_clave (None si
     no hay quiebre vigente -- en ese caso esta función no hace nada).
     niveles_liquidez_soporte / resistencia: exactamente lo que ya
     devuelve detectar_niveles_liquidez() en main.py -- no se recalcula
     nada nuevo acá.
-    estado_velocidad: el mismo string que ya calcula main.py
-    ("acelerando", etc.) para el bloque de Flow/Cerebro Copilot.
+    df_1m/df_3m/df_5m: para CONFIRMAR el desenlace del retest. Pedido
+    explícito de Jon: no alcanza con la lectura de un solo TF (15m) --
+    si hay reacción visible y consistente en 1m/3m/5m, ya está
+    confirmada, misma lógica de "mayoría de TFs de acuerdo" que ya usa
+    Setup 1.
 
-    Confirma entrada si: el precio actual está DENTRO del rango del
-    vacío, hay al menos un nivel de liquidez existente dentro de esa
-    zona (= "hay algo para barrer"), y estado_velocidad indica impulso
-    recuperándose -- en la dirección ORIGINAL del quiebre, no en la del
-    retroceso.
+    El vacío testeado tiene DOS desenlaces posibles, no uno solo --
+    mismo criterio que ya usa el panel de Niveles Imán ("barrido y
+    vuelta = posible fade; ruptura con cierre del otro lado =
+    continuación"), aplicado acá:
+
+      - "continuacion": barrió liquidez Y >=2 de los 3 TFs rápidos
+        (1m/3m/5m) muestran impulso acelerando A FAVOR de la dirección
+        ORIGINAL del quiebre -> confirma la entrada de continuación.
+      - "rechazo": barrió liquidez Y >=2 de los 3 TFs rápidos muestran
+        impulso acelerando EN CONTRA de la dirección original -> el
+        vacío está actuando de zona de reacción, no de paso -- posible
+        fade.
+      - "en_definicion": está en la zona del vacío pero ninguno de los
+        dos escenarios juntó mayoría todavía (TFs mezclados, estables,
+        o desacelerando).
     """
     if not quiebre:
-        return {"en_retest": False, "confirmado": False, "quiebre": None}
+        return {"en_retest": False, "escenario": None, "quiebre": None}
 
     precio_actual = float(df["close"].iloc[-1])
     en_vacio = quiebre["vacio_desde"] <= precio_actual <= quiebre["vacio_hasta"]
 
     if not en_vacio:
-        return {"en_retest": False, "confirmado": False, "quiebre": quiebre}
+        return {"en_retest": False, "escenario": None, "quiebre": quiebre}
 
     niveles_en_vacio = [
         n for n in list(niveles_liquidez_soporte) + list(niveles_liquidez_resistencia)
         if quiebre["vacio_desde"] <= n <= quiebre["vacio_hasta"]
     ]
-
     hay_liquidez_para_barrer = len(niveles_en_vacio) > 0
-    impulso_recuperado = estado_velocidad == "acelerando"
 
-    confirmado = hay_liquidez_para_barrer and impulso_recuperado
+    direccion_quiebre = quiebre["direccion_quiebre"]
+    lecturas_tf = {}
+    votos_a_favor = 0
+    votos_en_contra = 0
+
+    for etiqueta, df_tf in (("1m", df_1m), ("3m", df_3m), ("5m", df_5m)):
+        direccion_tf, estado_tf = _calcular_impulso_direccional(df_tf)
+        ruptura_tf = _detectar_ruptura_estructura(df_tf)
+        lecturas_tf[etiqueta] = {
+            "direccion": direccion_tf, "estado": estado_tf, "ruptura_estructura": ruptura_tf,
+        }
+
+        # Dos señales por TF, no una sola: impulso por aceleración (ya
+        # estaba) + ruptura de estructura de vela (pedido explícito de
+        # Jon -- vela que rompe apertura+mínimo/máximo de la vela
+        # anterior). Si las dos apuntan igual, vale como 1 voto de ese
+        # TF (no se duplica). Si se contradicen entre sí, no se cuenta
+        # ningún voto para ese TF -- señal mixta, mejor no opinar.
+        voto_impulso = direccion_tf if (estado_tf == "acelerando" and direccion_tf != "neutral") else None
+
+        if voto_impulso and ruptura_tf and voto_impulso != ruptura_tf:
+            voto_tf = None
+        else:
+            voto_tf = ruptura_tf or voto_impulso
+
+        if voto_tf is None:
+            continue
+        if voto_tf == direccion_quiebre:
+            votos_a_favor += 1
+        else:
+            votos_en_contra += 1
+
+    if hay_liquidez_para_barrer and votos_a_favor >= UMBRAL_CONFIRMACION_TFS:
+        escenario = "continuacion"
+    elif hay_liquidez_para_barrer and votos_en_contra >= UMBRAL_CONFIRMACION_TFS:
+        escenario = "rechazo"
+    else:
+        escenario = "en_definicion"
 
     return {
         "en_retest": True,
-        "confirmado": confirmado,
-        "direccion": quiebre["direccion_quiebre"],
+        "escenario": escenario,
+        "lecturas_tf": lecturas_tf,
+        "votos_a_favor": votos_a_favor,
+        "votos_en_contra": votos_en_contra,
+        "confirmado": escenario == "continuacion",  # se mantiene por compatibilidad
+        "direccion": direccion_quiebre,
         "niveles_en_vacio": niveles_en_vacio,
-        "impulso_recuperado": impulso_recuperado,
+        "hay_liquidez_para_barrer": hay_liquidez_para_barrer,
         "quiebre": quiebre,
     }

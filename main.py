@@ -17,6 +17,7 @@ import sesiones as ses
 import liquidez_mapa as liqm
 import resumen_diario as rdia
 import confluencia_flow as conf
+import confluencia_log as clog
 
 # ----------------------------------
 # CONFIG
@@ -768,9 +769,9 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-tab_dashboard, tab_opciones, tab_predicciones, tab_sesiones, tab_macro = st.tabs(
+tab_dashboard, tab_opciones, tab_predicciones, tab_sesiones, tab_macro, tab_confluencia_stats = st.tabs(
     ["📊 Dashboard", "📐 Opciones / Derivados", "🔎 Visión Analítica",
-     "🌊 Sesiones / Liquidez", "🌍 Macro & Geo"]
+     "🌊 Sesiones / Liquidez", "🌍 Macro & Geo", "📈 Confluencia Stats"]
 )
 
 with tab_dashboard:
@@ -2776,9 +2777,12 @@ with tab_dashboard:
     df_5m = obtener_velas("5m", 50)
     df_15m = obtener_velas("15m", 50)
     df_1h = obtener_velas("1h", 50)
-    # Agregado para "🎯 Confluencia by JonFlowMDQ" (Setup 1, MTF 3m/5m/15m)
-    # -- único TF que no se pedía todavía en ningún lado del dashboard.
+    # Agregado para "🎯 Confluencia by JonFlowMDQ": 3m para Setup 1 (MTF
+    # 3m/5m/15m), 1m sumado para Setup 2 (confirmar reacción/continuación
+    # del retest de vacío en 1m/3m/5m -- pedido explícito de Jon). Ninguno
+    # de los dos se pedía todavía en el dashboard.
     df_3m = obtener_velas("3m", 50)
+    df_1m = obtener_velas("1m", 50)
 
     # Punto de control: si alguno de los 3 vino vacío (el proxy no
     # respondió), detenemos acá. Más abajo el Dealer Score usa
@@ -5294,12 +5298,15 @@ with tab_dashboard:
             )
 
         # --- Setup 2: Retest de Vacío ---
+        # Pedido explícito de Jon: el retest tiene DOS desenlaces
+        # posibles (continuación o rechazo/fade), no solo confirmación
+        # de continuidad -- ver docstring de evaluar_retest_vacio.
         st.markdown("**🕳️ Retest de Vacío**")
 
         niveles_clave_vacio = [precio for (_fuente, precio) in niveles_para_iman_dorado]
         quiebre_vacio = conf.detectar_quiebre_en_zona_clave(df_15m, niveles_clave_vacio)
         retest_vacio = conf.evaluar_retest_vacio(
-            df_15m, quiebre_vacio, soportes, resistencias, estado_velocidad,
+            df_15m, quiebre_vacio, soportes, resistencias, df_1m, df_3m, df_5m,
         )
 
         if not quiebre_vacio:
@@ -5311,23 +5318,42 @@ with tab_dashboard:
                 f"${quiebre_vacio['tamano_vacio_usd']:,.0f}, {quiebre_vacio['tamano_vacio_atr']}x ATR). "
                 f"Precio todavía no volvió a esa zona."
             )
-        elif retest_vacio["confirmado"]:
+        elif retest_vacio["escenario"] == "continuacion":
             st.success(
-                f"🎯 Retest confirmado — quiebre {retest_vacio['direccion']} desde "
+                f"🎯 Continuación — quiebre {retest_vacio['direccion']} desde "
                 f"${quiebre_vacio['nivel_origen']:,.0f}, precio de vuelta en el vacío, "
-                f"barriendo {len(retest_vacio['niveles_en_vacio'])} nivel(es) de liquidez "
-                f"con impulso recuperado en la dirección original."
+                f"barriendo {len(retest_vacio['niveles_en_vacio'])} nivel(es) de liquidez, "
+                f"{retest_vacio['votos_a_favor']}/3 TFs (1m/3m/5m) confirmando A FAVOR "
+                f"de la dirección original."
+            )
+        elif retest_vacio["escenario"] == "rechazo":
+            st.warning(
+                f"↩️ Posible rechazo — quiebre {retest_vacio['direccion']} desde "
+                f"${quiebre_vacio['nivel_origen']:,.0f}, el precio barrió "
+                f"{len(retest_vacio['niveles_en_vacio'])} nivel(es) de liquidez en el vacío, "
+                f"pero {retest_vacio['votos_en_contra']}/3 TFs (1m/3m/5m) confirman impulso "
+                f"o ruptura de estructura EN CONTRA de la dirección original -- el vacío "
+                f"está actuando de zona de reacción, no de paso. Posible fade."
             )
         else:
-            motivo = []
-            if not retest_vacio["niveles_en_vacio"]:
-                motivo.append("sin liquidez para barrer en la zona")
-            if not retest_vacio["impulso_recuperado"]:
-                motivo.append("impulso todavía no recuperado")
             st.caption(
-                f"🟡 Precio en zona de vacío ({retest_vacio['direccion']}) pero sin confirmar "
-                f"({', '.join(motivo)})."
+                f"🟡 Precio en zona de vacío ({retest_vacio['direccion']}) — en definición "
+                f"(a favor: {retest_vacio['votos_a_favor']}/3 TFs, en contra: "
+                f"{retest_vacio['votos_en_contra']}/3 TFs, liquidez para barrer: "
+                f"{'sí' if retest_vacio['hay_liquidez_para_barrer'] else 'no'})."
             )
+
+        # ----------------------------------
+        # 📈 REGISTRO PARA ESTADÍSTICAS REALES (pedido explícito de Jon)
+        # ----------------------------------
+        # Guarda cada llamada de Setup 1/Setup 2 y evalúa las pendientes
+        # de refreshes anteriores -- ver confluencia_log.py y la solapa
+        # nueva "📈 Confluencia Stats" para el detalle y los resultados.
+        # Adentro del mismo try/except: si el logging falla, no se
+        # pierde la lectura en vivo del panel de arriba.
+        clog.registrar_evento_setup1(resultado_confluencia_mtf, precio_actual)
+        clog.registrar_evento_setup2(retest_vacio, precio_actual)
+        clog.evaluar_pendientes(precio_actual)
     except Exception as _err_confluencia:
         st.warning(
             f"🎯 Confluencia by JonFlowMDQ no pudo calcularse este refresh "
@@ -5762,6 +5788,135 @@ with tab_macro:
         )
     else:
         st.info("Noticias no disponibles en este ciclo (el proxy no pudo obtenerlas).")
+
+
+# ----------------------------------
+# 📈 SOLAPA 6: CONFLUENCIA STATS
+# ----------------------------------
+# Pedido explícito de Jon: recopilar lo que va tirando el panel de
+# Confluencia (Setup 1 + Setup 2) y empezar a juntar estadísticas
+# REALES -- no umbrales puestos a ojo. Motor en confluencia_log.py;
+# acá solo se muestra. Todo el contenido va adentro de un try/except,
+# mismo criterio que el panel de Confluencia: si esta solapa explota,
+# no se lleva puestas las otras.
+
+with tab_confluencia_stats:
+    st.subheader(
+        "📈 Confluencia Stats",
+        help=(
+            "Cada llamada de Confluencia by JonFlowMDQ (Setup 1: MTF alcista/"
+            "bajista; Setup 2: continuación/rechazo del retest de vacío) queda "
+            "guardada acá con el precio del momento. ~30 min después se chequea "
+            "si el precio se movió a favor o en contra de esa lectura, y se "
+            "arma un % de acierto real -- no una promesa, un dato que se junta "
+            "solo mientras uses el dashboard. Recién arrancado: con pocos "
+            "eventos el % no significa nada todavía, hace falta volumen de "
+            "datos (días de uso) antes de sacar conclusiones."
+        ),
+    )
+
+    try:
+        stats = clog.calcular_estadisticas()
+
+        col_e1, col_e2, col_e3 = st.columns(3)
+        with col_e1:
+            st.metric("Eventos totales", stats["total_eventos"])
+        with col_e2:
+            st.metric("Evaluados", stats["evaluados"])
+        with col_e3:
+            st.metric("Pendientes", stats["pendientes"])
+
+        if stats["evaluados"] == 0:
+            st.info(
+                "Todavía no hay eventos evaluados (recién arrancó el registro, o "
+                "están todos dentro de la ventana de ~30 min de espera). Volvé a "
+                "revisar esta solapa más tarde."
+            )
+        else:
+            st.markdown("**Acierto por tipo de llamada**")
+            if stats["por_fuente_escenario"]:
+                df_stats = pd.DataFrame([
+                    {
+                        "Fuente": clave.split(":")[0],
+                        "Escenario": clave.split(":")[1],
+                        "Total": v["total"],
+                        "Aciertos": v["aciertos"],
+                        "Fallos": v["fallos"],
+                        "Win rate": f"{v['win_rate']}%" if v["win_rate"] is not None else "—",
+                    }
+                    for clave, v in stats["por_fuente_escenario"].items()
+                ])
+                st.dataframe(df_stats, use_container_width=True, hide_index=True)
+
+            st.markdown("**Factores — qué correlaciona con acierto (Setup 2)**")
+            col_f1, col_f2 = st.columns(2)
+            with col_f1:
+                wr = stats["setup2_con_liquidez"]["win_rate"]
+                st.metric(
+                    "Con liquidez para barrer",
+                    f"{wr}%" if wr is not None else "sin datos",
+                    f"{stats['setup2_con_liquidez']['total']} eventos",
+                )
+            with col_f2:
+                wr = stats["setup2_sin_liquidez"]["win_rate"]
+                st.metric(
+                    "Sin liquidez para barrer",
+                    f"{wr}%" if wr is not None else "sin datos",
+                    f"{stats['setup2_sin_liquidez']['total']} eventos",
+                )
+
+            st.markdown("**Factores — qué correlaciona con acierto (Setup 1)**")
+            col_f3, col_f4 = st.columns(2)
+            with col_f3:
+                wr = stats["setup1_fuerza_alta"]["win_rate"]
+                st.metric(
+                    "Fuerza alta (≥8/12)",
+                    f"{wr}%" if wr is not None else "sin datos",
+                    f"{stats['setup1_fuerza_alta']['total']} eventos",
+                )
+            with col_f4:
+                wr = stats["setup1_fuerza_baja"]["win_rate"]
+                st.metric(
+                    "Fuerza baja (<8/12)",
+                    f"{wr}%" if wr is not None else "sin datos",
+                    f"{stats['setup1_fuerza_baja']['total']} eventos",
+                )
+
+        with st.expander("📋 Últimos 20 eventos (crudo, para auditar)"):
+            eventos_recientes = sorted(
+                clog._cargar_log(), key=lambda e: e.get("ts", ""), reverse=True
+            )[:20]
+            if eventos_recientes:
+                st.dataframe(
+                    pd.DataFrame([
+                        {
+                            "Fecha": e.get("ts", "")[:19].replace("T", " "),
+                            "Fuente": e.get("fuente"),
+                            "Escenario": e.get("escenario"),
+                            "Precio registro": e.get("precio_al_registrar"),
+                            "Resultado": e.get("resultado"),
+                            "Precio resultado": e.get("precio_resultado"),
+                        }
+                        for e in eventos_recientes
+                    ]),
+                    use_container_width=True, hide_index=True,
+                )
+            else:
+                st.caption("Sin eventos todavía.")
+
+        st.caption(
+            "⚠️ Limitación honesta: el log vive en un archivo local del servidor. "
+            "En Streamlit Community Cloud puede resetearse en un redeploy o si la "
+            "app se duerme por inactividad -- para que sobreviva eso hace falta "
+            "sincronizarlo a un storage externo (Notion, por ejemplo). No está "
+            "conectado todavía."
+        )
+    except Exception as _err_stats:
+        st.warning(
+            f"📈 Confluencia Stats no pudo calcularse este refresh "
+            f"({type(_err_stats).__name__}) -- el resto del dashboard sigue "
+            f"funcionando normalmente."
+        )
 
 
 # ----------------------------------
