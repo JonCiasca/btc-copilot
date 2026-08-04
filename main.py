@@ -3057,10 +3057,20 @@ def _actualizar_y_calcular_cambio_oi(historial_lista, oi_actual, ventana=10, top
 
     cambio_pct = None
 
+    # FIX (incidente 04-ago-2026): una colisión de key en otra parte
+    # del código llegó a mezclar valores no-numéricos en listas como
+    # esta, y el dashboard entero se caía acá con un TypeError al
+    # comparar. Se autolimpia en el momento (in-place, así también
+    # sanea sesiones ya abiertas que arrastran la lista corrupta) en
+    # vez de confiar en que nunca más va a pasar.
+    historial_lista[:] = [
+        v for v in historial_lista if isinstance(v, (int, float))
+    ]
+
     if len(historial_lista) > 0:
         base_idx = -ventana if len(historial_lista) >= ventana else 0
         oi_base = historial_lista[base_idx]
-        if oi_base > 0:
+        if isinstance(oi_base, (int, float)) and oi_base > 0:
             cambio_pct = round(((oi_actual - oi_base) / oi_base) * 100, 2)
 
     historial_lista.append(oi_actual)
@@ -5246,71 +5256,83 @@ with tab_dashboard:
         ),
     )
 
-    resultado_confluencia_mtf = conf.calcular_confluencia_mtf(
-        df_3m, df_5m, df_15m,
-        oi_cambio_3m=oi_cambio_3m, oi_cambio_5m=oi_cambio_5m, oi_cambio_15m=oi_cambio_15m,
-    )
+    # BLINDAJE (pedido explícito tras el incidente 04-ago-2026): este
+    # panel es nuevo y experimental -- todo lo que puede fallar acá
+    # adentro se atrapa y se muestra como un aviso chico, sin tirar
+    # abajo el resto del dashboard (Cerebro Copilot, scoring, gráfico
+    # principal, etc. siguen andando aunque esto explote).
+    try:
+        resultado_confluencia_mtf = conf.calcular_confluencia_mtf(
+            df_3m, df_5m, df_15m,
+            oi_cambio_3m=oi_cambio_3m, oi_cambio_5m=oi_cambio_5m, oi_cambio_15m=oi_cambio_15m,
+        )
 
-    col_c1, col_c2, col_c3 = st.columns(3)
-    for col, etiqueta, tf_data in (
-        (col_c1, "3m", resultado_confluencia_mtf["tf_3m"]),
-        (col_c2, "5m", resultado_confluencia_mtf["tf_5m"]),
-        (col_c3, "15m", resultado_confluencia_mtf["tf_15m"]),
-    ):
-        with col:
-            emoji_dir = {"alcista": "🟢", "bajista": "🔴", "neutral": "⚪"}[tf_data["direccion"]]
-            st.metric(f"{etiqueta}", f"{emoji_dir} {tf_data['direccion']}", f"{tf_data['puntos']}/4")
-            st.caption(
-                f"{'✅' if tf_data['cuerpo_ok'] else '❌'} Cuerpo ({tf_data['cuerpo_pct']*100:.0f}%)  \n"
-                f"{'✅' if tf_data['volumen_ok'] else '❌'} Volumen ({tf_data['volumen_x']}x)  \n"
-                f"{'✅' if tf_data['delta_ok'] else '❌'} Delta flujo ({tf_data['delta_pct']}%)  \n"
-                f"{'✅' if tf_data['oi_ok'] else '❌'} OI alineado"
+        col_c1, col_c2, col_c3 = st.columns(3)
+        for col, etiqueta, tf_data in (
+            (col_c1, "3m", resultado_confluencia_mtf["tf_3m"]),
+            (col_c2, "5m", resultado_confluencia_mtf["tf_5m"]),
+            (col_c3, "15m", resultado_confluencia_mtf["tf_15m"]),
+        ):
+            with col:
+                emoji_dir = {"alcista": "🟢", "bajista": "🔴", "neutral": "⚪"}[tf_data["direccion"]]
+                st.metric(f"{etiqueta}", f"{emoji_dir} {tf_data['direccion']}", f"{tf_data['puntos']}/4")
+                st.caption(
+                    f"{'✅' if tf_data['cuerpo_ok'] else '❌'} Cuerpo ({tf_data['cuerpo_pct']*100:.0f}%)  \n"
+                    f"{'✅' if tf_data['volumen_ok'] else '❌'} Volumen ({tf_data['volumen_x']}x)  \n"
+                    f"{'✅' if tf_data['delta_ok'] else '❌'} Delta flujo ({tf_data['delta_pct']}%)  \n"
+                    f"{'✅' if tf_data['oi_ok'] else '❌'} OI alineado"
+                )
+
+        if resultado_confluencia_mtf["direccion"] == "sin confluencia":
+            st.caption("⚪ Sin confluencia direccional clara en ninguna de las 3 temporalidades ahora mismo.")
+        else:
+            emoji_resumen = "🟢" if resultado_confluencia_mtf["direccion"] == "alcista" else "🔴"
+            st.success(
+                f"{emoji_resumen} Confluencia {resultado_confluencia_mtf['direccion']}: "
+                f"{resultado_confluencia_mtf['coincidentes']}/3 TFs alineados, "
+                f"fuerza {resultado_confluencia_mtf['fuerza']}/12."
             )
 
-    if resultado_confluencia_mtf["direccion"] == "sin confluencia":
-        st.caption("⚪ Sin confluencia direccional clara en ninguna de las 3 temporalidades ahora mismo.")
-    else:
-        emoji_resumen = "🟢" if resultado_confluencia_mtf["direccion"] == "alcista" else "🔴"
-        st.success(
-            f"{emoji_resumen} Confluencia {resultado_confluencia_mtf['direccion']}: "
-            f"{resultado_confluencia_mtf['coincidentes']}/3 TFs alineados, "
-            f"fuerza {resultado_confluencia_mtf['fuerza']}/12."
+        # --- Setup 2: Retest de Vacío ---
+        st.markdown("**🕳️ Retest de Vacío**")
+
+        niveles_clave_vacio = [precio for (_fuente, precio) in niveles_para_iman_dorado]
+        quiebre_vacio = conf.detectar_quiebre_en_zona_clave(df_15m, niveles_clave_vacio)
+        retest_vacio = conf.evaluar_retest_vacio(
+            df_15m, quiebre_vacio, soportes, resistencias, estado_velocidad,
         )
 
-    # --- Setup 2: Retest de Vacío ---
-    st.markdown("**🕳️ Retest de Vacío**")
-
-    niveles_clave_vacio = [precio for (_fuente, precio) in niveles_para_iman_dorado]
-    quiebre_vacio = conf.detectar_quiebre_en_zona_clave(df_15m, niveles_clave_vacio)
-    retest_vacio = conf.evaluar_retest_vacio(
-        df_15m, quiebre_vacio, soportes, resistencias, estado_velocidad,
-    )
-
-    if not quiebre_vacio:
-        st.caption("⚪ Sin quiebre reciente relevante desde una zona Imán/Gamma Pinning/Flip.")
-    elif not retest_vacio["en_retest"]:
-        st.caption(
-            f"🟡 Quiebre {quiebre_vacio['direccion_quiebre']} detectado desde "
-            f"${quiebre_vacio['nivel_origen']:,.0f} (vacío de "
-            f"${quiebre_vacio['tamano_vacio_usd']:,.0f}, {quiebre_vacio['tamano_vacio_atr']}x ATR). "
-            f"Precio todavía no volvió a esa zona."
-        )
-    elif retest_vacio["confirmado"]:
-        st.success(
-            f"🎯 Retest confirmado — quiebre {retest_vacio['direccion']} desde "
-            f"${quiebre_vacio['nivel_origen']:,.0f}, precio de vuelta en el vacío, "
-            f"barriendo {len(retest_vacio['niveles_en_vacio'])} nivel(es) de liquidez "
-            f"con impulso recuperado en la dirección original."
-        )
-    else:
-        motivo = []
-        if not retest_vacio["niveles_en_vacio"]:
-            motivo.append("sin liquidez para barrer en la zona")
-        if not retest_vacio["impulso_recuperado"]:
-            motivo.append("impulso todavía no recuperado")
-        st.caption(
-            f"🟡 Precio en zona de vacío ({retest_vacio['direccion']}) pero sin confirmar "
-            f"({', '.join(motivo)})."
+        if not quiebre_vacio:
+            st.caption("⚪ Sin quiebre reciente relevante desde una zona Imán/Gamma Pinning/Flip.")
+        elif not retest_vacio["en_retest"]:
+            st.caption(
+                f"🟡 Quiebre {quiebre_vacio['direccion_quiebre']} detectado desde "
+                f"${quiebre_vacio['nivel_origen']:,.0f} (vacío de "
+                f"${quiebre_vacio['tamano_vacio_usd']:,.0f}, {quiebre_vacio['tamano_vacio_atr']}x ATR). "
+                f"Precio todavía no volvió a esa zona."
+            )
+        elif retest_vacio["confirmado"]:
+            st.success(
+                f"🎯 Retest confirmado — quiebre {retest_vacio['direccion']} desde "
+                f"${quiebre_vacio['nivel_origen']:,.0f}, precio de vuelta en el vacío, "
+                f"barriendo {len(retest_vacio['niveles_en_vacio'])} nivel(es) de liquidez "
+                f"con impulso recuperado en la dirección original."
+            )
+        else:
+            motivo = []
+            if not retest_vacio["niveles_en_vacio"]:
+                motivo.append("sin liquidez para barrer en la zona")
+            if not retest_vacio["impulso_recuperado"]:
+                motivo.append("impulso todavía no recuperado")
+            st.caption(
+                f"🟡 Precio en zona de vacío ({retest_vacio['direccion']}) pero sin confirmar "
+                f"({', '.join(motivo)})."
+            )
+    except Exception as _err_confluencia:
+        st.warning(
+            f"🎯 Confluencia by JonFlowMDQ no pudo calcularse este refresh "
+            f"({type(_err_confluencia).__name__}) -- el resto del dashboard sigue "
+            f"funcionando normalmente. Si se repite seguido, avisar."
         )
 
        # -----------------------------
