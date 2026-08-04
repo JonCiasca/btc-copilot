@@ -18,6 +18,7 @@ import liquidez_mapa as liqm
 import resumen_diario as rdia
 import confluencia_flow as conf
 import confluencia_log as clog
+import confluencia_notion as cnot
 
 # ----------------------------------
 # CONFIG
@@ -5354,6 +5355,18 @@ with tab_dashboard:
         clog.registrar_evento_setup1(resultado_confluencia_mtf, precio_actual)
         clog.registrar_evento_setup2(retest_vacio, precio_actual)
         clog.evaluar_pendientes(precio_actual)
+
+        # Espejo opcional a Notion (ver confluencia_notion.py) -- try/except
+        # PROPIO además del general de acá abajo: si st.secrets ni siquiera
+        # existe todavía (nadie configuró nada en Settings → Secrets), que
+        # el log local de arriba siga andando igual, sin verse afectado.
+        try:
+            _notion_token = st.secrets.get("NOTION_TOKEN")
+            _notion_parent = st.secrets.get("NOTION_PARENT_PAGE_ID")
+            if _notion_token and _notion_parent:
+                cnot.sincronizar(_notion_token, _notion_parent)
+        except Exception:
+            pass
     except Exception as _err_confluencia:
         st.warning(
             f"🎯 Confluencia by JonFlowMDQ no pudo calcularse este refresh "
@@ -5907,10 +5920,23 @@ with tab_confluencia_stats:
         st.caption(
             "⚠️ Limitación honesta: el log vive en un archivo local del servidor. "
             "En Streamlit Community Cloud puede resetearse en un redeploy o si la "
-            "app se duerme por inactividad -- para que sobreviva eso hace falta "
-            "sincronizarlo a un storage externo (Notion, por ejemplo). No está "
-            "conectado todavía."
+            "app se duerme por inactividad -- por eso el espejo a Notion de abajo."
         )
+
+        st.markdown("**🔗 Espejo en Notion**")
+        _notion_token = st.secrets.get("NOTION_TOKEN")
+        _notion_parent = st.secrets.get("NOTION_PARENT_PAGE_ID")
+        if not _notion_token or not _notion_parent:
+            st.caption(
+                "⚪ No configurado -- faltan NOTION_TOKEN y/o NOTION_PARENT_PAGE_ID "
+                "en Settings → Secrets de esta app."
+            )
+        else:
+            _ok, _detalle = cnot.verificar_conexion(_notion_token)
+            if _ok:
+                st.caption(f"🟢 {_detalle} -- los eventos se están espejando a Notion.")
+            else:
+                st.caption(f"🔴 {_detalle}")
     except Exception as _err_stats:
         st.warning(
             f"📈 Confluencia Stats no pudo calcularse este refresh "

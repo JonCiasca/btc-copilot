@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
 confluencia_log.json
+confluencia_notion_db.json
+.streamlit/secrets.toml

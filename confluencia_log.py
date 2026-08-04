@@ -62,6 +62,13 @@ def _guardar_log(eventos):
         return False
 
 
+# Alias públicos -- confluencia_notion.py (el sync opcional) necesita
+# leer/escribir el mismo log para agregar el page_id de Notion a cada
+# evento una vez sincronizado, sin duplicar la lógica de lectura/escritura.
+cargar_eventos = _cargar_log
+guardar_eventos = _guardar_log
+
+
 def _ultimo_evento(eventos, fuente):
     candidatos = [e for e in eventos if e.get("fuente") == fuente]
     if not candidatos:
