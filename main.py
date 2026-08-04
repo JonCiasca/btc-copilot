@@ -2776,9 +2776,12 @@ with tab_dashboard:
     df_5m = obtener_velas("5m", 50)
     df_15m = obtener_velas("15m", 50)
     df_1h = obtener_velas("1h", 50)
-    # Agregado para "🎯 Confluencia by JonFlowMDQ" (Setup 1, MTF 3m/5m/15m)
-    # -- único TF que no se pedía todavía en ningún lado del dashboard.
+    # Agregado para "🎯 Confluencia by JonFlowMDQ": 3m para Setup 1 (MTF
+    # 3m/5m/15m), 1m sumado para Setup 2 (confirmar reacción/continuación
+    # del retest de vacío en 1m/3m/5m -- pedido explícito de Jon). Ninguno
+    # de los dos se pedía todavía en el dashboard.
     df_3m = obtener_velas("3m", 50)
+    df_1m = obtener_velas("1m", 50)
 
     # Punto de control: si alguno de los 3 vino vacío (el proxy no
     # respondió), detenemos acá. Más abajo el Dealer Score usa
@@ -5294,12 +5297,15 @@ with tab_dashboard:
             )
 
         # --- Setup 2: Retest de Vacío ---
+        # Pedido explícito de Jon: el retest tiene DOS desenlaces
+        # posibles (continuación o rechazo/fade), no solo confirmación
+        # de continuidad -- ver docstring de evaluar_retest_vacio.
         st.markdown("**🕳️ Retest de Vacío**")
 
         niveles_clave_vacio = [precio for (_fuente, precio) in niveles_para_iman_dorado]
         quiebre_vacio = conf.detectar_quiebre_en_zona_clave(df_15m, niveles_clave_vacio)
         retest_vacio = conf.evaluar_retest_vacio(
-            df_15m, quiebre_vacio, soportes, resistencias, estado_velocidad,
+            df_15m, quiebre_vacio, soportes, resistencias, df_1m, df_3m, df_5m,
         )
 
         if not quiebre_vacio:
@@ -5311,22 +5317,29 @@ with tab_dashboard:
                 f"${quiebre_vacio['tamano_vacio_usd']:,.0f}, {quiebre_vacio['tamano_vacio_atr']}x ATR). "
                 f"Precio todavía no volvió a esa zona."
             )
-        elif retest_vacio["confirmado"]:
+        elif retest_vacio["escenario"] == "continuacion":
             st.success(
-                f"🎯 Retest confirmado — quiebre {retest_vacio['direccion']} desde "
+                f"🎯 Continuación — quiebre {retest_vacio['direccion']} desde "
                 f"${quiebre_vacio['nivel_origen']:,.0f}, precio de vuelta en el vacío, "
-                f"barriendo {len(retest_vacio['niveles_en_vacio'])} nivel(es) de liquidez "
-                f"con impulso recuperado en la dirección original."
+                f"barriendo {len(retest_vacio['niveles_en_vacio'])} nivel(es) de liquidez, "
+                f"{retest_vacio['votos_a_favor']}/3 TFs (1m/3m/5m) confirmando A FAVOR "
+                f"de la dirección original."
+            )
+        elif retest_vacio["escenario"] == "rechazo":
+            st.warning(
+                f"↩️ Posible rechazo — quiebre {retest_vacio['direccion']} desde "
+                f"${quiebre_vacio['nivel_origen']:,.0f}, el precio barrió "
+                f"{len(retest_vacio['niveles_en_vacio'])} nivel(es) de liquidez en el vacío, "
+                f"pero {retest_vacio['votos_en_contra']}/3 TFs (1m/3m/5m) confirman impulso "
+                f"o ruptura de estructura EN CONTRA de la dirección original -- el vacío "
+                f"está actuando de zona de reacción, no de paso. Posible fade."
             )
         else:
-            motivo = []
-            if not retest_vacio["niveles_en_vacio"]:
-                motivo.append("sin liquidez para barrer en la zona")
-            if not retest_vacio["impulso_recuperado"]:
-                motivo.append("impulso todavía no recuperado")
             st.caption(
-                f"🟡 Precio en zona de vacío ({retest_vacio['direccion']}) pero sin confirmar "
-                f"({', '.join(motivo)})."
+                f"🟡 Precio en zona de vacío ({retest_vacio['direccion']}) — en definición "
+                f"(a favor: {retest_vacio['votos_a_favor']}/3 TFs, en contra: "
+                f"{retest_vacio['votos_en_contra']}/3 TFs, liquidez para barrer: "
+                f"{'sí' if retest_vacio['hay_liquidez_para_barrer'] else 'no'})."
             )
     except Exception as _err_confluencia:
         st.warning(
