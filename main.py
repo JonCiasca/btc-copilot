@@ -16,6 +16,7 @@ import iv_structure as ivs
 import sesiones as ses
 import liquidez_mapa as liqm
 import resumen_diario as rdia
+import confluencia_flow as conf
 
 # ----------------------------------
 # CONFIG
@@ -2775,6 +2776,9 @@ with tab_dashboard:
     df_5m = obtener_velas("5m", 50)
     df_15m = obtener_velas("15m", 50)
     df_1h = obtener_velas("1h", 50)
+    # Agregado para "🎯 Confluencia by JonFlowMDQ" (Setup 1, MTF 3m/5m/15m)
+    # -- único TF que no se pedía todavía en ningún lado del dashboard.
+    df_3m = obtener_velas("3m", 50)
 
     # Punto de control: si alguno de los 3 vino vacío (el proxy no
     # respondió), detenemos acá. Más abajo el Dealer Score usa
@@ -3726,6 +3730,29 @@ with tab_dashboard:
         oi_disponible = st.session_state.ultimo_oi_valido is not None
         oi_valor = st.session_state.ultimo_oi_valido if oi_disponible else 0.0
         oi_es_cache = True
+
+    # ----------------------------------
+    # HISTORIAL DE OI PARA "🎯 Confluencia by JonFlowMDQ"
+    # ----------------------------------
+    # LIMITACIÓN HONESTA: vive en session_state, así que arranca vacío
+    # en cada sesión nueva (mismo trade-off que el contador de sesiones)
+    # -- calcular_cambio_oi_pct devuelve None hasta juntar suficiente
+    # historial, y el panel de Confluencia lo muestra como criterio "sin
+    # datos todavía" en vez de romper.
+    if oi_disponible:
+        if "oi_historial" not in st.session_state:
+            st.session_state.oi_historial = []
+        st.session_state.oi_historial.append((datetime.now(), oi_valor))
+        # Poda: solo necesitamos los últimos ~20 minutos para 3/5/15m.
+        limite_historial = datetime.now() - pd.Timedelta(minutes=25)
+        st.session_state.oi_historial = [
+            (ts, v) for (ts, v) in st.session_state.oi_historial if ts >= limite_historial
+        ]
+
+    oi_cambio_3m = conf.calcular_cambio_oi_pct(st.session_state.get("oi_historial", []), 3)
+    oi_cambio_5m = conf.calcular_cambio_oi_pct(st.session_state.get("oi_historial", []), 5)
+    oi_cambio_15m = conf.calcular_cambio_oi_pct(st.session_state.get("oi_historial", []), 15)
+
     # ----------------------------------
     # PRESION REAL DEL MERCADO
     # ----------------------------------
@@ -5181,6 +5208,97 @@ with tab_dashboard:
     {sesgo}
     """
     )
+
+    # ----------------------------------
+    # 🎯 CONFLUENCIA BY JONFLOWMDQ (Setup 1 + Setup 2)
+    # ----------------------------------
+    # Panel 100% aislado: informativo, no toca scalp_edge ni ningún otro
+    # score todavía. Se valida en vivo primero -- ver docstring de
+    # confluencia_flow.py para el detalle de umbrales y supuestos
+    # (varios de Setup 2 son puntos de partida sin confirmar todavía).
+
+    st.divider()
+
+    st.subheader(
+        "🎯 Confluencia by JonFlowMDQ",
+        help=(
+            "Setup 1 (Confluencia MTF): compara la última vela cerrada de "
+            "3m/5m/15m por cuerpo amplio, volumen, delta de flujo (taker "
+            "buy/sell) y Open Interest alineado. Setup 2 (Retest de Vacío): "
+            "detecta si hubo un quiebre importante desde una zona Imán/Gamma "
+            "Pinning/Flip que dejó un vacío grande, y si el retest de ese "
+            "vacío está barriendo liquidez con impulso recuperado. Ninguno de "
+            "los dos umbrales está validado en vivo todavía -- panel "
+            "informativo, no reemplaza al resto del análisis."
+        ),
+    )
+
+    resultado_confluencia_mtf = conf.calcular_confluencia_mtf(
+        df_3m, df_5m, df_15m,
+        oi_cambio_3m=oi_cambio_3m, oi_cambio_5m=oi_cambio_5m, oi_cambio_15m=oi_cambio_15m,
+    )
+
+    col_c1, col_c2, col_c3 = st.columns(3)
+    for col, etiqueta, tf_data in (
+        (col_c1, "3m", resultado_confluencia_mtf["tf_3m"]),
+        (col_c2, "5m", resultado_confluencia_mtf["tf_5m"]),
+        (col_c3, "15m", resultado_confluencia_mtf["tf_15m"]),
+    ):
+        with col:
+            emoji_dir = {"alcista": "🟢", "bajista": "🔴", "neutral": "⚪"}[tf_data["direccion"]]
+            st.metric(f"{etiqueta}", f"{emoji_dir} {tf_data['direccion']}", f"{tf_data['puntos']}/4")
+            st.caption(
+                f"{'✅' if tf_data['cuerpo_ok'] else '❌'} Cuerpo ({tf_data['cuerpo_pct']*100:.0f}%)  \n"
+                f"{'✅' if tf_data['volumen_ok'] else '❌'} Volumen ({tf_data['volumen_x']}x)  \n"
+                f"{'✅' if tf_data['delta_ok'] else '❌'} Delta flujo ({tf_data['delta_pct']}%)  \n"
+                f"{'✅' if tf_data['oi_ok'] else '❌'} OI alineado"
+            )
+
+    if resultado_confluencia_mtf["direccion"] == "sin confluencia":
+        st.caption("⚪ Sin confluencia direccional clara en ninguna de las 3 temporalidades ahora mismo.")
+    else:
+        emoji_resumen = "🟢" if resultado_confluencia_mtf["direccion"] == "alcista" else "🔴"
+        st.success(
+            f"{emoji_resumen} Confluencia {resultado_confluencia_mtf['direccion']}: "
+            f"{resultado_confluencia_mtf['coincidentes']}/3 TFs alineados, "
+            f"fuerza {resultado_confluencia_mtf['fuerza']}/12."
+        )
+
+    # --- Setup 2: Retest de Vacío ---
+    st.markdown("**🕳️ Retest de Vacío**")
+
+    niveles_clave_vacio = [precio for (_fuente, precio) in niveles_para_iman_dorado]
+    quiebre_vacio = conf.detectar_quiebre_en_zona_clave(df_15m, niveles_clave_vacio)
+    retest_vacio = conf.evaluar_retest_vacio(
+        df_15m, quiebre_vacio, soportes, resistencias, estado_velocidad,
+    )
+
+    if not quiebre_vacio:
+        st.caption("⚪ Sin quiebre reciente relevante desde una zona Imán/Gamma Pinning/Flip.")
+    elif not retest_vacio["en_retest"]:
+        st.caption(
+            f"🟡 Quiebre {quiebre_vacio['direccion_quiebre']} detectado desde "
+            f"${quiebre_vacio['nivel_origen']:,.0f} (vacío de "
+            f"${quiebre_vacio['tamano_vacio_usd']:,.0f}, {quiebre_vacio['tamano_vacio_atr']}x ATR). "
+            f"Precio todavía no volvió a esa zona."
+        )
+    elif retest_vacio["confirmado"]:
+        st.success(
+            f"🎯 Retest confirmado — quiebre {retest_vacio['direccion']} desde "
+            f"${quiebre_vacio['nivel_origen']:,.0f}, precio de vuelta en el vacío, "
+            f"barriendo {len(retest_vacio['niveles_en_vacio'])} nivel(es) de liquidez "
+            f"con impulso recuperado en la dirección original."
+        )
+    else:
+        motivo = []
+        if not retest_vacio["niveles_en_vacio"]:
+            motivo.append("sin liquidez para barrer en la zona")
+        if not retest_vacio["impulso_recuperado"]:
+            motivo.append("impulso todavía no recuperado")
+        st.caption(
+            f"🟡 Precio en zona de vacío ({retest_vacio['direccion']}) pero sin confirmar "
+            f"({', '.join(motivo)})."
+        )
 
        # -----------------------------
     # CEREBRO GENERAL COPILOT - LECTURA SCALP MEJORADA
