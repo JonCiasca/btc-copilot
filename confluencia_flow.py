@@ -186,6 +186,18 @@ def calcular_cambio_oi_pct(historial_oi, minutos):
     if not historial_oi or len(historial_oi) < 2:
         return None
 
+    # Guarda defensiva: descarta cualquier entrada que no sea una
+    # tupla/lista (timestamp, valor) de 2 elementos -- ej. si otra
+    # parte del código volviera a escribir en la misma key por error --
+    # en vez de explotar acá. Mismo criterio "sin datos" que el resto
+    # del panel si no queda nada limpio.
+    historial_oi = [
+        item for item in historial_oi
+        if isinstance(item, (tuple, list)) and len(item) == 2
+    ]
+    if len(historial_oi) < 2:
+        return None
+
     ahora_ts, ahora_valor = historial_oi[-1]
     objetivo = ahora_ts - pd.Timedelta(minutes=minutos)
 

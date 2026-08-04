@@ -3739,19 +3739,32 @@ with tab_dashboard:
     # -- calcular_cambio_oi_pct devuelve None hasta juntar suficiente
     # historial, y el panel de Confluencia lo muestra como criterio "sin
     # datos todavía" en vez de romper.
+    # FIX (bug real en producción, TypeError en este bloque): la clave
+    # "oi_historial" YA estaba en uso por el OI combinado más abajo
+    # (ver _actualizar_y_calcular_cambio_oi, línea ~3053) como lista de
+    # floats -- acá se necesitaba (timestamp, valor). Mismo nombre, dos
+    # formas incompatibles, la lista se corrompía y esta list
+    # comprehension explotaba con TypeError al toparse con un float
+    # donde esperaba una tupla. Namespaced con prefijo propio para que
+    # no vuelva a pisarse con nada existente.
     if oi_disponible:
-        if "oi_historial" not in st.session_state:
-            st.session_state.oi_historial = []
-        st.session_state.oi_historial.append((datetime.now(), oi_valor))
+        if "confluencia_oi_ts_historial" not in st.session_state:
+            st.session_state.confluencia_oi_ts_historial = []
+        st.session_state.confluencia_oi_ts_historial.append((datetime.now(), oi_valor))
         # Poda: solo necesitamos los últimos ~20 minutos para 3/5/15m.
+        # Filtro defensivo de tipo (isinstance) agregado a propósito --
+        # si algo vuelve a escribir en esta lista por error, se ignora
+        # en vez de romper el dashboard entero.
         limite_historial = datetime.now() - pd.Timedelta(minutes=25)
-        st.session_state.oi_historial = [
-            (ts, v) for (ts, v) in st.session_state.oi_historial if ts >= limite_historial
+        st.session_state.confluencia_oi_ts_historial = [
+            (ts, v) for (ts, v) in st.session_state.confluencia_oi_ts_historial
+            if isinstance(ts, datetime) and ts >= limite_historial
         ]
 
-    oi_cambio_3m = conf.calcular_cambio_oi_pct(st.session_state.get("oi_historial", []), 3)
-    oi_cambio_5m = conf.calcular_cambio_oi_pct(st.session_state.get("oi_historial", []), 5)
-    oi_cambio_15m = conf.calcular_cambio_oi_pct(st.session_state.get("oi_historial", []), 15)
+    _hist_oi_confluencia = st.session_state.get("confluencia_oi_ts_historial", [])
+    oi_cambio_3m = conf.calcular_cambio_oi_pct(_hist_oi_confluencia, 3)
+    oi_cambio_5m = conf.calcular_cambio_oi_pct(_hist_oi_confluencia, 5)
+    oi_cambio_15m = conf.calcular_cambio_oi_pct(_hist_oi_confluencia, 15)
 
     # ----------------------------------
     # PRESION REAL DEL MERCADO
